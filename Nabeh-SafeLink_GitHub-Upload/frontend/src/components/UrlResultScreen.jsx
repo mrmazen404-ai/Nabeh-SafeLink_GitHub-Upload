@@ -82,6 +82,7 @@ export default function UrlResultScreen({ result, onReset, activeTab, setActiveT
   const totalEngines = vt.total_engines || 0;
   const geminiProvider = String(exp.provider || result?.stages?.stage3_gemini?.provider || '').toUpperCase();
   const usesGemini = geminiProvider.includes('GEMINI');
+  const assistantClassification = String(exp.classification || result?.stages?.stage3_gemini?.classification || '').toUpperCase();
   const maliciousPct = totalEngines > 0 ? ((vt.malicious || 0) / totalEngines) * 100 : 0;
   const suspiciousPct = totalEngines > 0 ? ((vt.suspicious || 0) / totalEngines) * 100 : 0;
   const harmlessPct = totalEngines > 0 ? ((vt.harmless || 0) / totalEngines) * 100 : 0;
@@ -179,9 +180,12 @@ export default function UrlResultScreen({ result, onReset, activeTab, setActiveT
                 </div>
 
                 <p className="explanation-text">{exp.summary}</p>
-                {usesGemini && exp.classification && (
+                {assistantClassification && (
                   <div className="explanation-text" style={{ marginTop: '10px', fontWeight: 600 }}>
-                    {lang === 'ar' ? 'تصنيف Gemini المساعد: ' : 'Gemini supporting classification: '}{exp.classification}
+                    {usesGemini
+                      ? (lang === 'ar' ? 'تصنيف Gemini المساعد: ' : 'Gemini supporting classification: ')
+                      : (lang === 'ar' ? 'تصنيف التحليل الاحتياطي: ' : 'Fallback analysis classification: ')}
+                    {assistantClassification}
                   </div>
                 )}
 

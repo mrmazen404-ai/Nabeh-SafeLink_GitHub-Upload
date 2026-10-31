@@ -295,7 +295,13 @@ class ScanService:
             "DANGEROUS": "تجنب فتح الرابط أو إدخال بياناتك." if not english else "Avoid opening the link or entering data.",
             "UNKNOWN": "أعد المحاولة لاحقاً أو تحقق عبر مصدر موثوق." if not english else "Try again later or verify with a trusted source.",
         }.get(classification, "توخ الحذر." if not english else "Exercise caution.")
-        return {"summary": text, "reasons": [], "recommendation": recommendation, "provider": "LOCAL_RULES"}
+        return {
+            "summary": text,
+            "reasons": [],
+            "recommendation": recommendation,
+            "classification": classification,
+            "provider": "LOCAL_RULES",
+        }
 
     @classmethod
     def _local_sms_fallback(cls, text_content: str, extracted_url: str, combined: dict, language: str, provider: str) -> dict:
@@ -578,6 +584,7 @@ class ScanService:
             "summary": ai_analysis.get("summary", ""),
             "reasons": ai_analysis.get("reasons", []),
             "recommendation": ai_analysis.get("recommendation", ""),
+            "classification": ai_analysis.get("classification", classification),
             "provider": ai_analysis.get("provider", "GEMINI_AI"),
             "claimed_sender": ai_analysis.get("claimed_sender", "جهة غير محددة"),
             "official_domain": ai_analysis.get("official_domain", "غير متاح"),

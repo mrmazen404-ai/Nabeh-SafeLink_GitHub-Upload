@@ -213,9 +213,12 @@ export default function SmsResultScreen({ result, onReset, activeTab, setActiveT
               </div>
 
               {exp.summary && <p className="explanation-text" style={{ fontSize: '0.95rem', lineHeight: '1.7' }}>{exp.summary}</p>}
-              {usesGemini && geminiClassification && (
+              {geminiClassification && (
                 <div className="explanation-text" style={{ marginTop: '10px', fontWeight: 600 }}>
-                  {lang === 'ar' ? 'تصنيف Gemini المساعد: ' : 'Gemini supporting classification: '}{geminiClassification}
+                  {usesGemini
+                    ? (lang === 'ar' ? 'تصنيف Gemini المساعد: ' : 'Gemini supporting classification: ')
+                    : (lang === 'ar' ? 'تصنيف التحليل الاحتياطي: ' : 'Fallback analysis classification: ')}
+                  {geminiClassification}
                 </div>
               )}
 
