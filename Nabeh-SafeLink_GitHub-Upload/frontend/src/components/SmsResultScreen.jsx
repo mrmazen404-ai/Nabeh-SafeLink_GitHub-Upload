@@ -342,6 +342,13 @@ export default function SmsResultScreen({ result, onReset, activeTab, setActiveT
               const linkMlSource = String(item?.ml_source || 'N/A').toUpperCase();
               const hasUsableLinkMl = linkMlSource === 'ML_MODEL'
                 && ['SAFE', 'SUSPICIOUS', 'DANGEROUS'].includes(linkMl);
+              const linkMlStatus = linkMlSource === 'INVALID_URL'
+                ? (lang === 'ar' ? 'الرابط غير صالح نحوياً؛ لم يُشغّل النموذج' : 'Invalid URL syntax; model was not run')
+                : linkMlSource === 'MODEL_ERROR'
+                  ? (lang === 'ar' ? 'حدث خطأ أثناء تشغيل النموذج' : 'Model execution error')
+                  : linkMlSource === 'MODEL_UNAVAILABLE'
+                    ? (lang === 'ar' ? 'النموذج غير متاح' : 'Model unavailable')
+                    : (lang === 'ar' ? 'النتيجة غير محسومة' : 'Inconclusive model result');
               const linkClassification = item?.classification || 'UNKNOWN';
               const engines = Number(linkVt.total_engines || 0);
               const label = linkClassification === 'DANGEROUS'
@@ -367,7 +374,7 @@ export default function SmsResultScreen({ result, onReset, activeTab, setActiveT
                   <p style={{ fontSize: '0.78rem', color: 'var(--color-text-subtle)', margin: '0 0 10px 0' }}>
                     {lang === 'ar' ? 'حالة نموذج LightGBM:' : 'LightGBM model status:'} {hasUsableLinkMl
                       ? linkMl
-                      : (lang === 'ar' ? 'النموذج غير متاح؛ النتيجة غير محسومة' : 'Model unavailable; verdict is inconclusive')}
+                      : linkMlStatus}
                   </p>
                   {engines > 0 && (
                     <div className="details-grid">
