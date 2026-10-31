@@ -474,21 +474,10 @@ def _sanitize_official_portal_url(parsed: dict, text_content: str, extracted_url
     if not isinstance(parsed, dict):
         return parsed
 
-    matched_official_domain = _matched_known_brand_domain(text_content, extracted_url)
-    no_www_domains = {"iam.gov.sa", "tawakkalna.sdaia.gov.sa"}
-    matched_official_portal = (
-        f"https://{matched_official_domain}" if matched_official_domain in no_www_domains
-        else f"https://www.{matched_official_domain}" if matched_official_domain
-        else None
-    )
-
-    if matched_official_portal:
-        parsed["official_portal_url"] = matched_official_portal
-        parsed["official_domain"] = matched_official_domain
-    else:
-        # Never pass through an unverified model-suggested portal or domain.
-        parsed["official_portal_url"] = "غير متاح"
-        parsed["official_domain"] = "غير متاح"
+    # A brand mention or URL resemblance cannot authenticate the sender.
+    # This client has no independent verification evidence contract.
+    parsed["official_portal_url"] = "غير متاح"
+    parsed["official_domain"] = "غير متاح"
 
     return parsed
 
@@ -525,12 +514,7 @@ def _local_sms_analysis(text_content: str, extracted_url: str = "", language: st
         reasons.append("لم تظهر إشارة محلية كافية للحكم؛ غياب الإشارة لا يثبت السلامة." if is_ar else "No sufficient local signal was found; absence of a signal is not proof of safety.")
 
     matched_domain = _matched_known_brand_domain(text_content, extracted_url)
-    no_www_domains = {"iam.gov.sa", "tawakkalna.sdaia.gov.sa"}
-    official_portal = (
-        f"https://{matched_domain}" if matched_domain in no_www_domains
-        else f"https://www.{matched_domain}" if matched_domain
-        else "غير متاح"
-    )
+    official_portal = "غير متاح"
     action_steps = [
         "لا تفتح رابطًا غير متحقق منه ولا تشارك رمز تحقق أو كلمة مرور." if is_ar else "Do not open an unverified link or share an OTP or password.",
         "تحقق من الجهة عبر تطبيقها الرسمي أو اكتب عنوانها بنفسك." if is_ar else "Verify through the official app or by entering its address yourself.",
@@ -684,11 +668,10 @@ def _local_explanation(
     # 5. ML Model Feature Probability Signal
     ml_prob = ml_evidence.get("phishing_prob")
     if ml_prob is not None and float(ml_prob) >= 0.40:
-        prob_pct = round(float(ml_prob) * 100, 1)
-        if is_ar:
-            reasons.append(f"تحليل نموذج التعلم الآلي (ML): أكد المحرك وجود أنماط خطورة عالية بنسبة احتمالية احتيال ({prob_pct}%).")
-        else:
-            reasons.append(f"Machine Learning Analysis: Detected high-risk structural features with phishing probability ({prob_pct}%).")
+            if is_ar:
+                reasons.append("تحليل نموذج التعلم الآلي (ML): رصد المحرك أنماطاً هيكلية تستدعي الحذر؛ النتيجة ليست نسبة احتمالية مُعايرة.")
+            else:
+                reasons.append("Machine Learning Analysis: Detected structural features requiring caution; this is not a calibrated probability.")
 
     # 6. VirusTotal Multi-Engine Evidence
     vt_malicious = int(vt_evidence.get("malicious", 0) or 0)

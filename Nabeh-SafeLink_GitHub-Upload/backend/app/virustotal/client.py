@@ -166,7 +166,11 @@ def _parse_response(data: Dict[str, Any]) -> Dict[str, Any]:
         suspicious = stats.get("suspicious", 0)
         harmless = stats.get("harmless", 0)
         undetected = stats.get("undetected", 0)
-        total = malicious + suspicious + harmless + undetected
+        additional_statuses = {
+            key: value for key, value in stats.items()
+            if key not in {"malicious", "suspicious", "harmless", "undetected"}
+        }
+        total = malicious + suspicious + harmless + undetected + sum(additional_statuses.values())
 
         reputation = attributes.get("reputation", 0)
         categories = attributes.get("categories", {})
@@ -192,6 +196,8 @@ def _parse_response(data: Dict[str, Any]) -> Dict[str, Any]:
             "harmless": harmless,
             "undetected": undetected,
             "total_engines": total,
+            "unclassified_engines": sum(additional_statuses.values()),
+            "additional_engine_statuses": additional_statuses,
             "reputation": reputation,
             "categories": categories,
         }
