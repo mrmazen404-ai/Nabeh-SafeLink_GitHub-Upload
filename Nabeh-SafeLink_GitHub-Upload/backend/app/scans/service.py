@@ -3,11 +3,12 @@
 import asyncio
 import logging
 import re
+import time
 from datetime import datetime, timezone
 from urllib.parse import urlsplit
 
 from app.db.supabase_client import supabase
-from app.observability import log_event, resource_id
+from app.observability import elapsed_ms, log_event, resource_id, safe_error
 from app.gemini.client import generate_explanation, analyze_sms_message
 from app.ml.predictor import predict_url
 from app.virustotal.client import check_url_virustotal
@@ -295,13 +296,7 @@ class ScanService:
             "DANGEROUS": "تجنب فتح الرابط أو إدخال بياناتك." if not english else "Avoid opening the link or entering data.",
             "UNKNOWN": "أعد المحاولة لاحقاً أو تحقق عبر مصدر موثوق." if not english else "Try again later or verify with a trusted source.",
         }.get(classification, "توخ الحذر." if not english else "Exercise caution.")
-        return {
-            "summary": text,
-            "reasons": [],
-            "recommendation": recommendation,
-            "classification": classification,
-            "provider": "LOCAL_RULES",
-        }
+        return {"summary": text, "reasons": [], "recommendation": recommendation, "provider": "LOCAL_RULES"}
 
     @classmethod
     def _local_sms_fallback(cls, text_content: str, extracted_url: str, combined: dict, language: str, provider: str) -> dict:
@@ -337,24 +332,35 @@ class ScanService:
     @classmethod
     async def process_url_scan(cls, target_url: str, language: str = "ar") -> dict:
         """Standalone 3-Stage URL Link Scanner (ML -> VirusTotal -> Gemini Research)."""
+        operation_id = resource_id(target_url)
+        started = time.perf_counter()
+        log_event(logger, logging.INFO, "scan_started", operation_id=operation_id, input_type="URL", mode="url")
         deadline = asyncio.get_running_loop().time() + settings.SCAN_TOTAL_TIMEOUT_SECONDS
+        ml_started = time.perf_counter()
+        log_event(logger, logging.INFO, "scan_ml_started", operation_id=operation_id, provider="ML_MODEL", mode="url")
         try:
             ml_result = predict_url(target_url)
-        except Exception:
-            logger.exception("url_ml_analysis_failed")
+            log_event(logger, logging.INFO, "scan_ml_succeeded", operation_id=operation_id, provider="ML_MODEL", classification=ml_result.get("classification"), duration_ms=elapsed_ms(ml_started))
+        except Exception as error:
+            log_event(logger, logging.ERROR, "scan_ml_failed", operation_id=operation_id, provider="ML_MODEL", error_type=safe_error(error), error_code="MODEL_ERROR", duration_ms=elapsed_ms(ml_started))
             ml_result = {"classification": "UNKNOWN", "confidence": None, "source": "ML_ERROR"}
 
+        vt_started = time.perf_counter()
+        log_event(logger, logging.INFO, "scan_virustotal_started", operation_id=operation_id, provider="VIRUSTOTAL", mode="url")
         try:
             remaining = max(0.0, deadline - asyncio.get_running_loop().time())
             vt_result = await asyncio.wait_for(check_url_virustotal(target_url), timeout=remaining)
         except asyncio.TimeoutError:
-            logger.warning("url_scan_total_deadline_virustotal")
+            log_event(logger, logging.WARNING, "scan_virustotal_timeout", operation_id=operation_id, provider="VIRUSTOTAL", error_code="SCAN_DEADLINE_EXCEEDED", duration_ms=elapsed_ms(vt_started))
             vt_result = {"status": "UNKNOWN", "error": "SCAN_DEADLINE_EXCEEDED"}
-        except Exception:
-            logger.exception("url_virustotal_failed")
+        except Exception as error:
+            log_event(logger, logging.ERROR, "scan_virustotal_failed", operation_id=operation_id, provider="VIRUSTOTAL", error_type=safe_error(error), error_code="VIRUSTOTAL_NETWORK_ERROR", duration_ms=elapsed_ms(vt_started))
             vt_result = {"status": "UNKNOWN", "error": "VIRUSTOTAL_UNAVAILABLE"}
+        else:
+            log_event(logger, logging.INFO, "scan_virustotal_succeeded", operation_id=operation_id, provider="VIRUSTOTAL", status=vt_result.get("status"), malicious=vt_result.get("malicious", 0), suspicious=vt_result.get("suspicious", 0), total_engines=vt_result.get("total_engines", 0), duration_ms=elapsed_ms(vt_started))
 
         combined = cls.combine_scan_results(vt_result, ml_result)
+        log_event(logger, logging.INFO, "scan_fusion_completed", operation_id=operation_id, provider="LOCAL_RULES", classification=combined.get("classification"), source=combined.get("source"))
         combined["evidence"] = {"ml": ml_result, "virustotal": vt_result, "input_type": "URL"}
 
         remaining = max(0.0, deadline - asyncio.get_running_loop().time())
@@ -368,6 +374,7 @@ class ScanService:
         if not ai_enabled:
             explanation = cls._local_explanation(combined["classification"], language)
             explanation["provider"] = "LOCAL_FEATURE_DISABLED"
+            log_event(logger, logging.WARNING, "scan_fallback_selected", operation_id=operation_id, provider="LOCAL_RULES", fallback_reason="AI_FEATURE_DISABLED")
         else:
             try:
                 explanation = await asyncio.wait_for(
@@ -380,13 +387,15 @@ class ScanService:
                     timeout=max(0.0, min(settings.SCAN_AI_TIMEOUT_SECONDS, deadline - asyncio.get_running_loop().time())),
                 )
             except asyncio.TimeoutError:
-                logger.warning("url_gemini_timeout")
+                log_event(logger, logging.WARNING, "scan_gemini_timeout", operation_id=operation_id, provider="GEMINI", error_code="GEMINI_TIMEOUT")
                 explanation = cls._local_explanation(combined["classification"], language)
                 explanation["provider"] = "LOCAL_TIMEOUT_FALLBACK"
-            except Exception:
-                logger.exception("url_gemini_failed")
+            except Exception as error:
+                log_event(logger, logging.WARNING, "scan_gemini_failed", operation_id=operation_id, provider="GEMINI", error_type=safe_error(error), error_code="GEMINI_PROVIDER_ERROR")
                 explanation = cls._local_explanation(combined["classification"], language)
                 explanation["provider"] = "LOCAL_ERROR_FALLBACK"
+
+        log_event(logger, logging.INFO, "scan_succeeded", operation_id=operation_id, classification=combined["classification"], provider=explanation.get("provider"), duration_ms=elapsed_ms(started), mode="url")
 
         return {
             "scan_kind": "URL_LINK",
@@ -433,10 +442,14 @@ class ScanService:
     @classmethod
     async def process_text_scan(cls, text_content: str, language: str = "ar") -> dict:
         """100% AI-Driven SMS / Text Message Smishing Scanner (Gemini AI API + Link Audit Pipeline)."""
+        operation_id = resource_id(text_content)
+        started = time.perf_counter()
+        log_event(logger, logging.INFO, "scan_started", operation_id=operation_id, input_type="TEXT", mode="sms")
         deadline = asyncio.get_running_loop().time() + settings.SCAN_TOTAL_TIMEOUT_SECONDS
         all_extracted_urls = cls.extract_urls_from_text(text_content)
         extracted_urls = all_extracted_urls[:MAX_EMBEDDED_URLS]
         unscanned_url_count = max(0, len(all_extracted_urls) - len(extracted_urls))
+        log_event(logger, logging.INFO, "scan_validation_succeeded", operation_id=operation_id, input_type="TEXT", mode="sms", links_detected=len(all_extracted_urls), links_scanned=len(extracted_urls))
         extracted_url = extracted_urls[0] if extracted_urls else ""
         semaphore = asyncio.Semaphore(2)
 
@@ -444,7 +457,7 @@ class ScanService:
             try:
                 ml = await asyncio.to_thread(predict_url, url)
             except Exception:
-                logger.exception("sms_ml_analysis_failed")
+                log_event(logger, logging.ERROR, "scan_ml_failed", operation_id=operation_id, provider="ML_MODEL", error_code="MODEL_ERROR")
                 ml = {"classification": "UNKNOWN", "confidence": None, "source": "ML_ERROR"}
 
             async with semaphore:
@@ -457,10 +470,10 @@ class ScanService:
                             check_url_virustotal(url), timeout=min(8.0, remaining)
                         )
                     except asyncio.TimeoutError:
-                        logger.warning("sms_scan_total_deadline_virustotal")
+                        log_event(logger, logging.WARNING, "scan_virustotal_timeout", operation_id=operation_id, provider="VIRUSTOTAL", error_code="SCAN_DEADLINE_EXCEEDED")
                         vt = {"status": "UNKNOWN", "error": "SCAN_DEADLINE_EXCEEDED"}
-                    except Exception:
-                        logger.exception("sms_virustotal_failed")
+                    except Exception as error:
+                        log_event(logger, logging.ERROR, "scan_virustotal_failed", operation_id=operation_id, provider="VIRUSTOTAL", error_type=safe_error(error), error_code="VIRUSTOTAL_NETWORK_ERROR")
                         vt = {"status": "UNKNOWN", "error": "VIRUSTOTAL_UNAVAILABLE"}
             return {"url": url, "ml": ml, "virustotal": vt, "combined": cls.combine_scan_results(vt, ml)}
 
@@ -499,7 +512,7 @@ class ScanService:
             "ml": ml_result,
             "virustotal": vt_result,
             "input_type": "TEXT",
-            "extracted_url": selected_url or extracted_url,
+            "extracted_url": extracted_url,
             "selected_url": selected_url,
             "embedded_url_analyses": [
                 {
@@ -528,6 +541,7 @@ class ScanService:
             ai_analysis = cls._local_sms_fallback(
                 text_content, selected_url or extracted_url, combined, language, "LOCAL_FEATURE_DISABLED"
             )
+            log_event(logger, logging.WARNING, "scan_gemini_fallback_selected", operation_id=operation_id, provider="LOCAL_RULES", fallback_reason="AI_FEATURE_DISABLED", mode="sms")
         else:
             try:
                 ai_analysis = await asyncio.wait_for(
@@ -540,12 +554,12 @@ class ScanService:
                     timeout=max(0.0, min(settings.SCAN_AI_TIMEOUT_SECONDS, deadline - asyncio.get_running_loop().time())),
                 )
             except asyncio.TimeoutError:
-                logger.warning("sms_gemini_timeout")
+                log_event(logger, logging.WARNING, "scan_gemini_timeout", operation_id=operation_id, provider="GEMINI", error_code="GEMINI_TIMEOUT", mode="sms")
                 ai_analysis = cls._local_sms_fallback(
                     text_content, selected_url or extracted_url, combined, language, "LOCAL_TIMEOUT_FALLBACK"
                 )
-            except Exception:
-                logger.exception("sms_gemini_failed")
+            except Exception as error:
+                log_event(logger, logging.WARNING, "scan_gemini_failed", operation_id=operation_id, provider="GEMINI", error_type=safe_error(error), error_code="GEMINI_PROVIDER_ERROR", mode="sms")
                 ai_analysis = cls._local_sms_fallback(
                     text_content, selected_url or extracted_url, combined, language, "LOCAL_ERROR_FALLBACK"
                 )
@@ -579,12 +593,12 @@ class ScanService:
         # This SMS task has no independently calibrated probability model.
         confidence = None
         fraud_prob = None
+        log_event(logger, logging.INFO, "scan_succeeded", operation_id=operation_id, input_type="TEXT", mode="sms", classification=classification, provider=ai_analysis.get("provider"), links_scanned=len(embedded_url_analyses), links_not_scanned=unscanned_url_count, duration_ms=elapsed_ms(started))
 
         explanation = {
             "summary": ai_analysis.get("summary", ""),
             "reasons": ai_analysis.get("reasons", []),
             "recommendation": ai_analysis.get("recommendation", ""),
-            "classification": ai_analysis.get("classification", classification),
             "provider": ai_analysis.get("provider", "GEMINI_AI"),
             "claimed_sender": ai_analysis.get("claimed_sender", "جهة غير محددة"),
             "official_domain": ai_analysis.get("official_domain", "غير متاح"),
@@ -604,7 +618,7 @@ class ScanService:
             "scan_kind": "SMS_TEXT",
             "input_type": "TEXT",
             "input_value": text_content,
-            "extracted_url": selected_url or extracted_url or None,
+            "extracted_url": extracted_url or None,
             "selected_url": selected_url,
             "extracted_urls": all_extracted_urls,
             "links_scanned_count": len(embedded_url_analyses),
@@ -743,6 +757,8 @@ class ScanService:
         scan_res["is_guest"] = False
 
         try:
+            persistence_started = time.perf_counter()
+            log_event(logger, logging.INFO, "scan_persistence_started", operation_id=operation_id, provider="SUPABASE", operation_name="insert_scan")
             now_iso = datetime.now(timezone.utc).isoformat()
             scan_data = {
                 "user_id": user_id,
@@ -759,6 +775,7 @@ class ScanService:
             if saved.data:
                 scan_id = saved.data[0].get("id")
                 scan_res["scan_id"] = scan_id
+                log_event(logger, logging.INFO, "scan_persistence_succeeded", operation_id=operation_id, provider="SUPABASE", operation_name="insert_scan", scan_id=scan_id, duration_ms=elapsed_ms(persistence_started))
                 try:
                     await asyncio.to_thread(record_platform_scan_metric, scan_res.get("classification", "UNKNOWN"))
                 except Exception:
@@ -768,7 +785,7 @@ class ScanService:
                 except Exception:
                     # Older installations can apply the additive SQL migration later;
                     # the scan itself must not fail merely because the optional snapshot is absent.
-                    logger.warning("analysis_snapshot_persistence_skipped")
+                    log_event(logger, logging.WARNING, "supabase_operation_failed", operation_id=operation_id, provider="SUPABASE", operation_name="update_analysis_snapshot", error_code="PERSISTENCE_FAILED")
 
                 explanation = scan_res.get("explanation", {})
                 raw_provider = str(explanation.get("provider", "LOCAL_RULES")).upper()
@@ -794,7 +811,7 @@ class ScanService:
                 try:
                     supabase.table("scan_explanations").insert(explanation_data).execute()
                 except Exception:
-                    logger.warning("scan_explanation_persistence_failed")
+                    log_event(logger, logging.WARNING, "supabase_operation_failed", operation_id=operation_id, provider="SUPABASE", operation_name="insert_scan_explanation", error_code="PERSISTENCE_FAILED")
                 event = {
                     "type": "scan_completed",
                     "scan_id": scan_id,
@@ -805,10 +822,9 @@ class ScanService:
                 }
                 try:
                     await manager.broadcast(user_id, event)
-                except Exception:
-                    # Persistence already succeeded; a disconnected client must
-                    # never turn a completed scan into a retry/duplicate.
-                    logger.warning("scan_completed_broadcast_failed", exc_info=True)
+                    log_event(logger, logging.INFO, "websocket_broadcast_succeeded", operation_id=operation_id, scan_id=scan_id, status="succeeded")
+                except Exception as error:
+                    log_event(logger, logging.WARNING, "websocket_broadcast_failed", operation_id=operation_id, scan_id=scan_id, error_type=safe_error(error), error_code="BROADCAST_FAILED")
                 if scan_res.get("classification") == "DANGEROUS":
                     notification = {
                         "user_id": user_id,
@@ -820,8 +836,9 @@ class ScanService:
                     try:
                         saved_notification = supabase.table("notifications").insert(notification).execute()
                         notification_data = (saved_notification.data or [notification])[0]
+                        log_event(logger, logging.INFO, "notification_succeeded", operation_id=operation_id, scan_id=scan_id, status="succeeded")
                     except Exception:
-                        logger.warning("dangerous_notification_persistence_failed")
+                        log_event(logger, logging.WARNING, "notification_failed", operation_id=operation_id, scan_id=scan_id, error_code="NOTIFICATION_FAILED")
                         notification_data = notification
                     try:
                         await manager.broadcast(user_id, {
@@ -830,11 +847,12 @@ class ScanService:
                             "notification": notification_data,
                             "created_at": now_iso,
                         })
-                    except Exception:
-                        logger.warning("security_alert_broadcast_failed", exc_info=True)
+                        log_event(logger, logging.INFO, "websocket_broadcast_succeeded", operation_id=operation_id, scan_id=scan_id, mode="security_alert")
+                    except Exception as error:
+                        log_event(logger, logging.WARNING, "websocket_broadcast_failed", operation_id=operation_id, scan_id=scan_id, mode="security_alert", error_type=safe_error(error), error_code="BROADCAST_FAILED")
                 log_event(logger, logging.INFO, "authenticated_scan_persisted", operation_id=operation_id, scan_id=scan_id)
-        except Exception:
-            logger.error("authenticated_scan_persistence_failed")
+        except Exception as error:
+            log_event(logger, logging.ERROR, "scan_persistence_failed", operation_id=operation_id, provider="SUPABASE", error_type=safe_error(error), error_code="PERSISTENCE_FAILED")
             raise ScanPersistenceError("scan persistence failed") from None
 
         log_event(logger, logging.INFO, "authenticated_scan_finished", operation_id=operation_id, classification=scan_res.get("classification"))

@@ -1,5 +1,6 @@
 from datetime import datetime, timezone
 import ipaddress
+import logging
 import re
 from typing import Literal, Optional
 from urllib.parse import urlsplit
@@ -12,8 +13,10 @@ from app.security.guest_rate_limit import enforce_guest_rate_limit
 from app.scans.service import ScanPersistenceError, ScanService
 from app.db.supabase_client import supabase
 from app.system_settings import SystemSettingsUnavailable, setting_enabled
+from app.observability import log_event, safe_error
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 class ScanRequest(BaseModel):
@@ -40,7 +43,8 @@ async def get_optional_user_id(authorization: Optional[str] = None) -> Optional[
         user = get_authenticated_user(token)
         require_latest_terms(user)
         return str(user["id"])
-    except AuthSecurityError:
+    except AuthSecurityError as error:
+        log_event(logger, logging.WARNING, "authentication_failed", error_code="AUTH_REQUIRED", error_type=safe_error(error), user_context="authenticated")
         raise HTTPException(status_code=401, detail="جلسة غير صالحة") from None
 
 
@@ -113,7 +117,12 @@ async def create_guest_scan(
         raise HTTPException(status_code=503, detail="تعذر التحقق من إعدادات الفحص") from None
     if not guest_scanning_enabled:
         raise HTTPException(status_code=403, detail="فحص الضيف متوقف حالياً؛ سجّل الدخول لاستخدام الفحص")
-    raw_input = _validate_input(request)
+    try:
+        raw_input = _validate_input(request)
+    except HTTPException:
+        log_event(logger, logging.WARNING, "scan_validation_failed", input_type=request.input_type, error_code="INVALID_INPUT", user_context="guest")
+        raise
+    log_event(logger, logging.INFO, "scan_validation_succeeded", input_type=request.input_type, mode="guest", user_context="guest")
     response.headers["Cache-Control"] = "no-store, private"
     response.headers["Pragma"] = "no-cache"
     result = await ScanService.process_guest_scan(
@@ -133,8 +142,13 @@ async def create_authenticated_scan(
     """Persist a scan only for the account verified from the bearer token."""
     response.headers["Cache-Control"] = "no-store, private"
     response.headers["Pragma"] = "no-cache"
-    raw_input = _validate_input(request)
+    try:
+        raw_input = _validate_input(request)
+    except HTTPException:
+        log_event(logger, logging.WARNING, "scan_validation_failed", input_type=request.input_type, error_code="INVALID_INPUT", user_context="authenticated")
+        raise
     user_id = await get_required_user_id(authorization)
+    log_event(logger, logging.INFO, "scan_validation_succeeded", input_type=request.input_type, mode="authenticated", user_context="authenticated")
     try:
         result = await ScanService.process_authenticated_scan(
             input_type=request.input_type,

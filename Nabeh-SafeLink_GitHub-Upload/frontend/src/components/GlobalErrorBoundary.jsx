@@ -1,4 +1,5 @@
 import React from 'react';
+import { frontendLog } from '../services/observability';
 
 export default class GlobalErrorBoundary extends React.Component {
   constructor(props) {
@@ -12,7 +13,10 @@ export default class GlobalErrorBoundary extends React.Component {
 
   componentDidCatch(error, errorInfo) {
     this.setState({ errorInfo });
-    console.error('Nabeh SafeLink Render Error:', error, errorInfo);
+    frontendLog('frontend_render_error', {
+      error_type: error?.name || 'Error',
+      component_stack_length: errorInfo?.componentStack?.length || 0,
+    });
   }
 
   handleReload = () => {

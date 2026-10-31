@@ -6,7 +6,7 @@ from pathlib import Path
 from uuid import uuid4
 from urllib.parse import urlsplit
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -24,7 +24,7 @@ from app.admin.settings_routes import router as admin_settings_router
 from app.public.routes import router as public_router
 from app.legal.terms_consent import router as terms_consent_router
 from app.system_settings import SystemSettingsUnavailable, get_system_settings
-from app.observability import configure_logging, elapsed_ms, install_request_id_filter, log_event, reset_request_id, set_request_id
+from app.observability import configure_logging, elapsed_ms, install_request_id_filter, log_event, reset_request_id, set_request_id, safe_error, safe_error_code
 from app.ml.predictor import get_model_readiness
 from app.gemini.client import get_provider_readiness
 from app.virustotal.client import get_provider_readiness as get_virustotal_readiness
@@ -68,7 +68,8 @@ app.add_middleware(
     allow_origins=list(settings.CORS_ALLOWED_ORIGINS),
     allow_credentials=False,
     allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
-    allow_headers=["Authorization", "Content-Type"],
+    allow_headers=["Authorization", "Content-Type", "X-Request-ID"],
+    expose_headers=["X-Request-ID"],
 )
 
 app.include_router(auth_router, prefix="/api/v1/auth", tags=["Auth"])
@@ -96,13 +97,13 @@ async def request_logging_middleware(request: Request, call_next):
     request_token = set_request_id(request_id_value)
     request.state.request_id = request_id_value
     started = time.perf_counter()
-    log_event(logger, logging.INFO, "request_started", method=request.method, path=request.url.path)
+    log_event(logger, logging.INFO, "request_started", method=request.method, route=request.url.path, user_context="system")
     response = None
     try:
         path = request.url.path
         is_admin_path = path == "/api/v1/admin" or path.startswith("/api/v1/admin/")
         is_runtime_config = path == "/api/v1/public/runtime-config"
-        is_health = path in {"/health", "/api/v1/health"}
+        is_health = path in {"/health", "/api/v1/health", "/ready", "/api/v1/ready"}
         if path.startswith("/api/v1/") and not (is_admin_path or is_runtime_config or is_health):
             try:
                 maintenance_mode = await run_in_threadpool(
@@ -128,9 +129,9 @@ async def request_logging_middleware(request: Request, call_next):
         log_event(
             logger,
             logging.INFO if response.status_code < 400 else logging.WARNING,
-            "request_finished",
+            "request_succeeded" if response.status_code < 400 else "request_failed",
             method=request.method,
-            path=request.url.path,
+            route=request.url.path,
             status=response.status_code,
             duration_ms=elapsed_ms(started),
         )
@@ -148,8 +149,9 @@ async def request_logging_middleware(request: Request, call_next):
             logging.ERROR,
             "request_failed",
             method=request.method,
-            path=request.url.path,
-            error_type=type(error).__name__,
+            route=request.url.path,
+            error_type=safe_error(error),
+            error_code=safe_error_code(error),
             duration_ms=elapsed_ms(started),
         )
         raise
@@ -166,16 +168,41 @@ def request_id_for_header() -> str:
 
 @app.get("/health")
 @app.get("/api/v1/health")
-def health():
+def health(response: Response):
     ml_readiness = get_model_readiness()
     virustotal_readiness = get_virustotal_readiness()
-    return {
+    gemini_readiness = get_provider_readiness()
+    data = {
         "status": "healthy",
         "readiness": "ready" if ml_readiness.get("status") == "ready" and virustotal_readiness.get("status") == "configured" else "degraded",
         "ml_model": ml_readiness,
-        "gemini": get_provider_readiness(),
+        "gemini": gemini_readiness,
         "virustotal": virustotal_readiness,
     }
+    log_event(logger, logging.INFO, "health_liveness_completed", status="succeeded", readiness=data["readiness"], provider="LOCAL")
+    return data
+
+
+@app.get("/ready")
+@app.get("/api/v1/ready")
+def readiness(response: Response):
+    """Readiness is separate from liveness and never calls external providers."""
+    ml = get_model_readiness()
+    vt = get_virustotal_readiness()
+    gemini = get_provider_readiness()
+    ready = ml.get("status") == "ready" and vt.get("status") == "configured"
+    if not ready:
+        response.status_code = 503
+    log_event(
+        logger,
+        logging.INFO if ready else logging.WARNING,
+        "readiness_check_completed",
+        status="succeeded" if ready else "degraded",
+        ml_status=ml.get("status"),
+        virustotal_status=vt.get("status"),
+        gemini_status=gemini.get("status"),
+    )
+    return {"status": "ready" if ready else "degraded", "ml_model": ml, "virustotal": vt, "gemini": gemini}
 
 
 # Local production-like mode: one URL serves both the built React app and the API.

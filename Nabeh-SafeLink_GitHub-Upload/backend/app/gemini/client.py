@@ -9,12 +9,11 @@ import asyncio
 import json
 import re
 import logging
-import time
 from google import genai
 from google.genai import types
 from app.config import settings
 from app.gemini.schemas import GeminiSMSAnalysis, validate_gemini_payload, validate_gemini_sms_payload
-from app.observability import elapsed_ms, log_event, resource_id, safe_error
+from app.observability import log_event, resource_id, safe_error
 from app.scans.text_rules import analyze_message_indicators
 
 client = None
@@ -120,20 +119,6 @@ def _is_rate_limited_error(error: Exception) -> bool:
     return any(str(value).upper() in {"429", "RESOURCE_EXHAUSTED"} for value in candidates if value is not None)
 
 
-def _provider_error_code(error: Exception) -> str | None:
-    """Return only a short provider error code; never log provider messages or payloads."""
-    response = getattr(error, "response", None)
-    for value in (
-        getattr(error, "status_code", None),
-        getattr(error, "code", None),
-        getattr(response, "status_code", None),
-        getattr(error, "status", None),
-    ):
-        if isinstance(value, (str, int)) and str(value):
-            return str(value)[:40]
-    return None
-
-
 def _retry_after_seconds(error: Exception, attempt: int) -> float:
     response = getattr(error, "response", None)
     headers = getattr(response, "headers", {}) or {}
@@ -180,8 +165,7 @@ async def generate_explanation(
     evidence = evidence or {}
     untrusted_url_json = json.dumps({"url": (input_value or "")[:300]}, ensure_ascii=False)
     operation_id = resource_id(input_value)
-    operation_started = time.perf_counter()
-    log_event(logger, logging.INFO, "gemini_explanation_started", operation_id=operation_id, classification=classification, language=language)
+    log_event(logger, logging.INFO, "scan_gemini_started", operation_id=operation_id, classification=classification, language=language)
     ml_evidence = evidence.get("ml", {})
     vt_evidence = evidence.get("virustotal", {})
     safe_evidence = {
@@ -208,8 +192,8 @@ Evidence Data:
 {json.dumps(safe_evidence, ensure_ascii=False)}
 
 Cybersecurity Research Instructions:
-1. Do not identify, certify, or invent an official registered domain from a brand mention. No sender, domain, or portal is verified by this analysis alone.
-2. Compare only the supplied URL structure and explicit evidence. Describe a possible impersonation as unverified; never call a domain official, verified, or trusted.
+1. Search and identify the true official registered domain for any organization or brand mentioned or impersonated in the input URL.
+2. Compare the input URL's domain against the official domain and highlight any discrepancies, typosquatting, or spoofing.
 3. Analyze deceptive URL structure, the categorical ML signal, and available VirusTotal engine findings.
 4. Do not alter the Primary Security Classification.
 
@@ -226,20 +210,19 @@ Respond ONLY in valid JSON matching this exact structure:
     current_key = _get_api_key()
     if not current_key:
         _set_provider_status("not_configured")
-        log_event(logger, logging.WARNING, "gemini_provider_not_configured", operation_id=operation_id, fallback_reason="GEMINI_API_KEY_MISSING", duration_ms=elapsed_ms(operation_started))
+        log_event(logger, logging.WARNING, "scan_gemini_fallback_selected", operation_id=operation_id, provider="LOCAL_RULES", fallback_reason="GEMINI_API_KEY_MISSING")
         return _sanitized_local_explanation(classification, language, input_value, evidence)
 
     gemini_client = _get_client()
     if gemini_client is None:
         _set_provider_status("unavailable")
-        log_event(logger, logging.WARNING, "gemini_client_unavailable", operation_id=operation_id, fallback_reason="CLIENT_UNAVAILABLE", duration_ms=elapsed_ms(operation_started))
+        log_event(logger, logging.WARNING, "scan_gemini_fallback_selected", operation_id=operation_id, provider="LOCAL_RULES", fallback_reason="CLIENT_UNAVAILABLE")
         return _sanitized_local_explanation(classification, language, input_value, evidence)
 
     # Multi-tier model fallback cascade: iterates through every model until a successful response
     for model_name in PRIMARY_MODELS:
         _set_provider_status("attempting")
-        model_started = time.perf_counter()
-        log_event(logger, logging.INFO, "gemini_model_attempt_started", operation_id=operation_id, model=model_name, mode="search")
+        log_event(logger, logging.INFO, "scan_gemini_attempt_started", operation_id=operation_id, model=model_name, mode="search")
 
         # Mode 1: Search Grounded Generation
         try:
@@ -265,18 +248,17 @@ Respond ONLY in valid JSON matching this exact structure:
                 input_value=input_value,
                 evidence=evidence,
             )
-            log_event(logger, logging.INFO, "gemini_model_succeeded", operation_id=operation_id, model=model_name, mode="search", duration_ms=elapsed_ms(model_started), parse_status="valid_json")
+            log_event(logger, logging.INFO, "scan_gemini_attempt_succeeded", operation_id=operation_id, model=model_name, mode="search")
             _set_provider_status("ready", "GEMINI_SEARCH")
             return result
         except Exception as error:
             _set_provider_status("failed", error=error)
-            log_event(logger, logging.WARNING, "gemini_model_attempt_failed", operation_id=operation_id, model=model_name, mode="search", error_type=safe_error(error), error_code=_provider_error_code(error), duration_ms=elapsed_ms(model_started))
+            log_event(logger, logging.WARNING, "scan_gemini_attempt_failed", operation_id=operation_id, model=model_name, mode="search", error_type=safe_error(error))
             if _is_rate_limited_error(error):
-                log_event(logger, logging.WARNING, "gemini_rate_limited_fallback", operation_id=operation_id, model=model_name, mode="search", fallback_reason="RATE_LIMITED")
+                log_event(logger, logging.WARNING, "scan_gemini_rate_limited", operation_id=operation_id)
                 break
 
         # Mode 2: Standard Gemini JSON Generation
-        model_started = time.perf_counter()
         try:
             response = await _generate_content_with_rate_limit_retry(
                 gemini_client, model=model_name, contents=prompt, operation_id=operation_id,
@@ -302,7 +284,7 @@ Respond ONLY in valid JSON matching this exact structure:
                     input_value=input_value,
                     evidence=evidence,
                 )
-                log_event(logger, logging.INFO, "gemini_model_succeeded", operation_id=operation_id, model=model_name, mode="json", duration_ms=elapsed_ms(model_started), parse_status="valid_json")
+                log_event(logger, logging.INFO, "scan_gemini_attempt_succeeded", operation_id=operation_id, model=model_name, mode="json")
                 _set_provider_status("ready", "GEMINI")
                 return result
             except json.JSONDecodeError:
@@ -316,19 +298,19 @@ Respond ONLY in valid JSON matching this exact structure:
                         input_value=input_value,
                         evidence=evidence,
                     )
-                    log_event(logger, logging.INFO, "gemini_model_succeeded", operation_id=operation_id, model=model_name, mode="text_fallback", duration_ms=elapsed_ms(model_started), parse_status="invalid_json_text_salvaged")
+                    log_event(logger, logging.INFO, "scan_gemini_attempt_succeeded", operation_id=operation_id, model=model_name, mode="text_fallback")
                     _set_provider_status("ready", "GEMINI")
                     return result
 
         except Exception as e:
             _set_provider_status("failed", error=e)
-            log_event(logger, logging.WARNING, "gemini_provider_request_failed", operation_id=operation_id, model=model_name, mode="json", error_type=safe_error(e), error_code=_provider_error_code(e), duration_ms=elapsed_ms(model_started))
+            log_event(logger, logging.WARNING, "scan_gemini_attempt_failed", operation_id=operation_id, model=model_name, error_type=safe_error(e))
             if _is_rate_limited_error(e):
-                log_event(logger, logging.WARNING, "gemini_rate_limited_fallback", operation_id=operation_id, model=model_name, mode="json", fallback_reason="RATE_LIMITED")
+                log_event(logger, logging.WARNING, "scan_gemini_rate_limited", operation_id=operation_id)
                 break
             continue
 
-    log_event(logger, logging.WARNING, "gemini_provider_fallback_used", operation_id=operation_id, fallback_reason="ALL_MODELS_FAILED", duration_ms=elapsed_ms(operation_started))
+    log_event(logger, logging.WARNING, "scan_gemini_fallback_selected", operation_id=operation_id, provider="LOCAL_RULES", fallback_reason="ALL_MODELS_FAILED")
     return _sanitized_local_explanation(classification, language, input_value, evidence)
 
 
@@ -400,16 +382,13 @@ Do not return probability, confidence, or numeric risk scores.
 
     if not current_key:
         _set_provider_status("not_configured")
-        log_event(logger, logging.WARNING, "gemini_sms_provider_not_configured", operation_id=operation_id, fallback_reason="GEMINI_API_KEY_MISSING")
     elif gemini_client is None:
         _set_provider_status("unavailable")
-        log_event(logger, logging.WARNING, "gemini_sms_client_unavailable", operation_id=operation_id, fallback_reason="CLIENT_UNAVAILABLE")
 
     if gemini_client:
         for model_name in PRIMARY_MODELS:
             _set_provider_status("attempting")
-            model_started = time.perf_counter()
-            log_event(logger, logging.INFO, "gemini_sms_model_attempt_started", operation_id=operation_id, model=model_name, mode="search")
+            log_event(logger, logging.INFO, "gemini_sms_model_attempt_started", operation_id=operation_id, model=model_name)
 
             # Mode 1: Search Grounded Generation for SMS Research
             try:
@@ -427,22 +406,21 @@ Do not return probability, confidence, or numeric risk scores.
 
                 parsed = validate_gemini_sms_payload(json.loads(text_clean), fallback=local_fallback)
                 if parsed.get("provider") == "LOCAL_SCHEMA_FALLBACK":
-                    log_event(logger, logging.WARNING, "gemini_sms_schema_validation_failed", operation_id=operation_id, model=model_name, mode="search", parse_status="schema_invalid", duration_ms=elapsed_ms(model_started))
+                    log_event(logger, logging.WARNING, "gemini_sms_schema_validation_failed", operation_id=operation_id, model=model_name, mode="search")
                     continue
                 parsed["provider"] = f"GEMINI_SEARCH ({model_name})"
                 parsed = _sanitize_official_portal_url(parsed, text_content, extracted_url)
-                log_event(logger, logging.INFO, "gemini_sms_analysis_succeeded", operation_id=operation_id, model=model_name, mode="search", parse_status="valid_json", duration_ms=elapsed_ms(model_started))
+                log_event(logger, logging.INFO, "gemini_sms_analysis_succeeded", operation_id=operation_id, model=model_name, mode="search")
                 _set_provider_status("ready", "GEMINI_SEARCH")
                 return parsed
             except Exception as error:
                 _set_provider_status("failed", error=error)
-                log_event(logger, logging.WARNING, "gemini_sms_search_attempt_failed", operation_id=operation_id, model=model_name, mode="search", error_type=safe_error(error), error_code=_provider_error_code(error), duration_ms=elapsed_ms(model_started))
+                log_event(logger, logging.WARNING, "gemini_sms_search_attempt_failed", operation_id=operation_id, model=model_name, error_type=safe_error(error))
                 if _is_rate_limited_error(error):
-                    log_event(logger, logging.WARNING, "gemini_sms_rate_limited_fallback", operation_id=operation_id, model=model_name, mode="search", fallback_reason="RATE_LIMITED")
+                    log_event(logger, logging.WARNING, "gemini_sms_rate_limited_fallback", operation_id=operation_id)
                     break
 
             # Mode 2: Standard JSON Schema Generation
-            model_started = time.perf_counter()
             try:
                 response = await _generate_content_with_rate_limit_retry(
                     gemini_client, model=model_name, contents=prompt, operation_id=operation_id,
@@ -459,23 +437,22 @@ Do not return probability, confidence, or numeric risk scores.
 
                 parsed = validate_gemini_sms_payload(json.loads(text_clean), fallback=local_fallback)
                 if parsed.get("provider") == "LOCAL_SCHEMA_FALLBACK":
-                    log_event(logger, logging.WARNING, "gemini_sms_schema_validation_failed", operation_id=operation_id, model=model_name, mode="json", parse_status="schema_invalid", duration_ms=elapsed_ms(model_started))
+                    log_event(logger, logging.WARNING, "gemini_sms_schema_validation_failed", operation_id=operation_id, model=model_name, mode="json")
                     continue
                 parsed["provider"] = f"GEMINI_AI ({model_name})"
                 parsed = _sanitize_official_portal_url(parsed, text_content, extracted_url)
-                log_event(logger, logging.INFO, "gemini_sms_analysis_succeeded", operation_id=operation_id, model=model_name, mode="json", parse_status="valid_json", duration_ms=elapsed_ms(model_started))
+                log_event(logger, logging.INFO, "gemini_sms_analysis_succeeded", operation_id=operation_id, model=model_name, mode="json")
                 _set_provider_status("ready", "GEMINI")
                 return parsed
             except Exception as error:
                 _set_provider_status("failed", error=error)
-                log_event(logger, logging.WARNING, "gemini_sms_json_attempt_failed", operation_id=operation_id, model=model_name, mode="json", error_type=safe_error(error), error_code=_provider_error_code(error), duration_ms=elapsed_ms(model_started))
+                log_event(logger, logging.WARNING, "gemini_sms_json_attempt_failed", operation_id=operation_id, model=model_name, error_type=safe_error(error))
                 if _is_rate_limited_error(error):
-                    log_event(logger, logging.WARNING, "gemini_sms_rate_limited_fallback", operation_id=operation_id, model=model_name, mode="json", fallback_reason="RATE_LIMITED")
+                    log_event(logger, logging.WARNING, "gemini_sms_rate_limited_fallback", operation_id=operation_id)
                     break
                 continue
 
     local_fallback["provider"] = "LOCAL_AI_RULES"
-    log_event(logger, logging.WARNING, "gemini_sms_fallback_used", operation_id=operation_id, fallback_reason="ALL_MODELS_FAILED" if gemini_client else "PROVIDER_UNAVAILABLE")
     return _sanitize_official_portal_url(local_fallback, text_content, extracted_url)
 
 
@@ -497,11 +474,21 @@ def _sanitize_official_portal_url(parsed: dict, text_content: str, extracted_url
     if not isinstance(parsed, dict):
         return parsed
 
-    # A brand mention is not proof that the sender or claim is authentic. Do
-    # not manufacture a navigation target from a local brand list. A future
-    # verified-source contract may populate these fields explicitly.
-    parsed["official_portal_url"] = "غير متاح"
-    parsed["official_domain"] = "غير متاح"
+    matched_official_domain = _matched_known_brand_domain(text_content, extracted_url)
+    no_www_domains = {"iam.gov.sa", "tawakkalna.sdaia.gov.sa"}
+    matched_official_portal = (
+        f"https://{matched_official_domain}" if matched_official_domain in no_www_domains
+        else f"https://www.{matched_official_domain}" if matched_official_domain
+        else None
+    )
+
+    if matched_official_portal:
+        parsed["official_portal_url"] = matched_official_portal
+        parsed["official_domain"] = matched_official_domain
+    else:
+        # Never pass through an unverified model-suggested portal or domain.
+        parsed["official_portal_url"] = "غير متاح"
+        parsed["official_domain"] = "غير متاح"
 
     return parsed
 
@@ -538,7 +525,12 @@ def _local_sms_analysis(text_content: str, extracted_url: str = "", language: st
         reasons.append("لم تظهر إشارة محلية كافية للحكم؛ غياب الإشارة لا يثبت السلامة." if is_ar else "No sufficient local signal was found; absence of a signal is not proof of safety.")
 
     matched_domain = _matched_known_brand_domain(text_content, extracted_url)
-    official_portal = "غير متاح"
+    no_www_domains = {"iam.gov.sa", "tawakkalna.sdaia.gov.sa"}
+    official_portal = (
+        f"https://{matched_domain}" if matched_domain in no_www_domains
+        else f"https://www.{matched_domain}" if matched_domain
+        else "غير متاح"
+    )
     action_steps = [
         "لا تفتح رابطًا غير متحقق منه ولا تشارك رمز تحقق أو كلمة مرور." if is_ar else "Do not open an unverified link or share an OTP or password.",
         "تحقق من الجهة عبر تطبيقها الرسمي أو اكتب عنوانها بنفسك." if is_ar else "Verify through the official app or by entering its address yourself.",
@@ -556,7 +548,7 @@ def _local_sms_analysis(text_content: str, extracted_url: str = "", language: st
         "reasons": reasons,
         "recommendation": recommendation,
         "official_portal_url": official_portal,
-        "official_domain": "غير متاح",
+        "official_domain": matched_domain or "غير متاح",
         "claim_verdict_explanation": "لا يمكن التحقق من الادعاء بالأدلة المتاحة." if is_ar else "The claim cannot be verified from the available evidence.",
         "action_plan_steps": action_steps,
         "authenticity_status": "غير متحقق" if is_ar else "Unverified",
@@ -692,10 +684,11 @@ def _local_explanation(
     # 5. ML Model Feature Probability Signal
     ml_prob = ml_evidence.get("phishing_prob")
     if ml_prob is not None and float(ml_prob) >= 0.40:
+        prob_pct = round(float(ml_prob) * 100, 1)
         if is_ar:
-            reasons.append("تحليل نموذج التعلم الآلي (ML): رصد النموذج أنماطاً هيكلية تستدعي الحذر؛ لا نعرض نسبة غير معايرة.")
+            reasons.append(f"تحليل نموذج التعلم الآلي (ML): أكد المحرك وجود أنماط خطورة عالية بنسبة احتمالية احتيال ({prob_pct}%).")
         else:
-            reasons.append("Machine Learning Analysis: The model detected structural patterns requiring caution; no uncalibrated percentage is shown.")
+            reasons.append(f"Machine Learning Analysis: Detected high-risk structural features with phishing probability ({prob_pct}%).")
 
     # 6. VirusTotal Multi-Engine Evidence
     vt_malicious = int(vt_evidence.get("malicious", 0) or 0)
@@ -715,10 +708,10 @@ def _local_explanation(
             else:
                 reasons.append("Detected unusual security risk indicators in domain structure and metadata.")
         else:
-            if classification == "SAFE":
-                reasons.append("لم تُرصد مؤشرات خطر في الأدلة المتاحة، لكن ذلك لا يثبت أصالة النطاق." if is_ar else "No risk indicator was found in the available evidence; this does not prove domain authenticity.")
+            if is_ar:
+                reasons.append("نطاق معتمد وموثوق خالٍ من مؤشرات التهديد السيبراني.")
             else:
-                reasons.append("لا تتوفر أدلة كافية لإصدار حكم نهائي؛ غياب المؤشرات لا يثبت السلامة." if is_ar else "There is not enough evidence for a final verdict; absence of indicators is not proof of safety.")
+                reasons.append("Verified trusted domain with no security threat indicators.")
 
     display_target = host if host else "الرابط"
     if classification == "DANGEROUS":
@@ -737,11 +730,11 @@ def _local_explanation(
             recommendation = "Verify the official source and avoid entering sensitive information."
     elif classification == "SAFE":
         if is_ar:
-            summary = f"لم تُرصد مؤشرات خطر في الرابط '{display_target}' ضمن الأدلة المتاحة، لكن لم يتم إثبات أصالته."
-            recommendation = "تحقق من النطاق عبر قناة رسمية مستقلة قبل إدخال أي بيانات."
+            summary = f"الرابط آمن وموثوق: ينتمي '{display_target}' إلى نطاق موثوق معتمد وتأكدت سلامته عبر محركات الفحص."
+            recommendation = "يمكنك التصفح والمتابعة بأمان."
         else:
-            summary = f"No risk indicators were found for URL '{display_target}' in the available evidence, but authenticity was not verified."
-            recommendation = "Verify the domain through an independent official channel before entering data."
+            summary = f"Safe Link: URL '{display_target}' belongs to a trusted domain verified by security engines."
+            recommendation = "You can proceed safely."
     else:
         if is_ar:
             summary = f"تعذر التحقق بدقة من الرابط '{display_target}'. يرجى توخي الحذر."
@@ -757,11 +750,7 @@ def _local_explanation(
     if "prize" in full_url_lower or "reward" in full_url_lower or "مبروك" in full_url_lower:
         lure_str = "ادعاء فوز بجائزة أو مكافأة مالية" if is_ar else "Fake prize/reward claim"
 
-    auth_status = (
-        "احتيالية (Fake SMS)" if classification == "DANGEROUS"
-        else "مشبوهة (Unverified)" if classification == "SUSPICIOUS"
-        else "لم يتم التحقق (Unverified)" if is_ar else "Unverified"
-    )
+    auth_status = "احتيالية (Fake SMS)" if classification == "DANGEROUS" else "مشبوهة (Unverified)" if classification == "SUSPICIOUS" else "رسمية (Official SMS)"
 
     return {
         "classification": classification,

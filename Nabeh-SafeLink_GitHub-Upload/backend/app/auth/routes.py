@@ -28,7 +28,7 @@ from app.auth.security import (
 )
 from app.config import settings
 from app.db.supabase_client import supabase
-from app.observability import log_event, mask_email
+from app.observability import log_event, mask_email, safe_error
 from app.security.guest_rate_limit import UpstashRateLimiter, client_identity
 from app.system_settings import SystemSettingsUnavailable, get_system_settings, setting_enabled
 
@@ -234,6 +234,7 @@ async def _enforce_auth_limits(
     for limiter, identity in zip(limiters, (ip_identity, email_identity)):
         decision = await limiter.check(identity)
         if not decision.allowed:
+            log_event(logger, logging.WARNING, "rate_limit_rejected", purpose=limiter.namespace, user_context="system", error_code="RATE_LIMITED" if not decision.unavailable else "RATE_LIMIT_UNAVAILABLE")
             raise HTTPException(
                 status_code=503 if decision.unavailable else 429,
                 detail=("تعذر معالجة الطلب مؤقتاً. حاول لاحقاً." if decision.unavailable else "تم تجاوز عدد الطلبات. حاول لاحقاً."),
@@ -273,12 +274,12 @@ async def register(request: RegisterRequest, http_request: Request):
         password_hash = hash_password(request.password)
         await run_in_threadpool(_issue_signup_otp, email, password_hash, display_name)
     except EmailDeliveryError as error:
-        logger.warning("email_delivery_failed code=%s", str(error))
+        log_event(logger, logging.WARNING, "registration_failed", recipient=mask_email(email), error_type=safe_error(error), error_code="EMAIL_DELIVERY_FAILED")
         raise HTTPException(status_code=503, detail="تعذر إرسال رمز التحقق حاليًا. حاول لاحقًا.") from None
     except HTTPException:
         raise
-    except Exception:
-        logger.exception("custom_register_failed")
+    except Exception as error:
+        log_event(logger, logging.ERROR, "registration_failed", recipient=mask_email(email), error_type=safe_error(error), error_code="INTERNAL_ERROR")
         raise HTTPException(status_code=503, detail="تعذر معالجة الطلب حاليًا. حاول لاحقًا.") from None
 
     log_event(logger, logging.INFO, "registration_otp_issued", recipient=mask_email(email))
@@ -302,9 +303,11 @@ async def login(request: LoginRequest, response: Response, http_request: Request
         if not user or not user.get("email_verified") or user.get("status", "ACTIVE") != "ACTIVE" or not verify_password(request.password, user["password_hash"]):
             raise HTTPException(status_code=401, detail="البريد أو كلمة المرور غير صحيحة")
         token = issue_access_token(user)
-    except HTTPException:
+    except HTTPException as error:
+        log_event(logger, logging.WARNING, "login_failed", recipient=mask_email(str(request.email)), error_code="AUTH_FAILED", status=error.status_code)
         raise
-    except Exception:
+    except Exception as error:
+        log_event(logger, logging.WARNING, "login_failed", recipient=mask_email(str(request.email)), error_type=safe_error(error), error_code="AUTH_FAILED")
         raise HTTPException(status_code=401, detail="البريد أو كلمة المرور غير صحيحة") from None
     response.headers["Cache-Control"] = "no-store, private"
     response.headers["Pragma"] = "no-cache"
@@ -396,7 +399,7 @@ async def resend_otp(request: ResendOtpRequest, http_request: Request):
                 await run_in_threadpool(_issue_recovery_otp, user["id"], email)
 
     except EmailDeliveryError as error:
-        logger.warning("otp_resend_email_delivery_failed code=%s", str(error))
+        log_event(logger, logging.WARNING, "otp_resend_email_delivery_failed", recipient=mask_email(email), error_type=safe_error(error), error_code="EMAIL_DELIVERY_FAILED")
         raise HTTPException(status_code=503, detail="تعذر إرسال رمز التحقق حاليًا. حاول لاحقًا.") from None
     except Exception:
         logger.exception("otp_resend_failed")

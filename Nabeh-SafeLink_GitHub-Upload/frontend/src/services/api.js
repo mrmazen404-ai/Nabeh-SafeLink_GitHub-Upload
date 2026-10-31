@@ -1,5 +1,6 @@
 import axios from 'axios';
 import { getAccessToken } from './authToken';
+import { frontendLog, newRequestId, safeRouteName } from './observability';
 
 const configuredApiUrl = import.meta.env.VITE_API_URL || (
   import.meta.env.PROD ? '/api/v1' : 'http://localhost:8000/api/v1'
@@ -37,17 +38,30 @@ const api = axios.create({
 });
 
 api.interceptors.request.use((config) => {
+  const startedAt = performance.now();
+  const requestId = newRequestId();
+  config.metadata = { startedAt, requestId };
+  config.headers = config.headers || {};
+  config.headers['X-Request-ID'] = requestId;
   const token = getAccessToken();
   if (token) {
-    config.headers = config.headers || {};
     if (!config.headers.Authorization) config.headers.Authorization = `Bearer ${token}`;
   }
+  frontendLog('frontend_request_started', { method: config.method?.toUpperCase(), route: safeRouteName(config.url), request_id: requestId });
   return config;
 });
 
 api.interceptors.response.use(
-  (response) => response,
+  (response) => {
+    const metadata = response.config?.metadata || {};
+    const requestId = response.headers?.['x-request-id'] || metadata.requestId;
+    frontendLog('frontend_request_succeeded', { method: response.config?.method?.toUpperCase(), route: safeRouteName(response.config?.url), status: response.status, duration_ms: Math.round(performance.now() - (metadata.startedAt || performance.now())), request_id: requestId });
+    return response;
+  },
   (error) => {
+    const metadata = error.config?.metadata || {};
+    const requestId = error.response?.headers?.['x-request-id'] || metadata.requestId;
+    frontendLog('frontend_request_failed', { method: error.config?.method?.toUpperCase(), route: safeRouteName(error.config?.url), status: error.response?.status || 0, duration_ms: Math.round(performance.now() - (metadata.startedAt || performance.now())), request_id: requestId, error_code: error.response?.data?.code || 'REQUEST_FAILED' });
     if (error?.response?.status === 401 && typeof window !== 'undefined') {
       window.dispatchEvent(new Event('nabeh:auth-expired'));
     }

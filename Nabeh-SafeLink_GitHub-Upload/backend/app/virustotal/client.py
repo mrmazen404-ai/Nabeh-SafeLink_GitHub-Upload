@@ -67,27 +67,31 @@ async def check_url_virustotal(url: str) -> Dict[str, Any]:
             log_event(logger, logging.DEBUG, "virustotal_lookup_response", target_id=target_id, status=response.status_code)
 
             if response.status_code == 404:
+                log_event(logger, logging.INFO, "scan_virustotal_lookup_not_found", target_id=target_id, provider="VIRUSTOTAL", status=404, duration_ms=elapsed_ms(started))
                 return await _submit_url(url, client)
 
             if response.status_code == 401:
+                log_event(logger, logging.WARNING, "scan_virustotal_failed", target_id=target_id, provider="VIRUSTOTAL", status=401, error_code="VIRUSTOTAL_PROVIDER_ERROR", duration_ms=elapsed_ms(started))
                 return {
                     "status": "UNKNOWN",
                     "confidence": 0.0,
-                    "error": "Invalid API key (401)",
+                    "error": "VIRUSTOTAL_PROVIDER_ERROR",
                 }
 
             if response.status_code == 429:
+                log_event(logger, logging.WARNING, "scan_virustotal_rate_limited", target_id=target_id, provider="VIRUSTOTAL", status=429, error_code="RATE_LIMITED", duration_ms=elapsed_ms(started))
                 return {
                     "status": "UNKNOWN",
                     "confidence": 0.0,
-                    "error": "Rate limit exceeded (429)",
+                    "error": "VIRUSTOTAL_RATE_LIMITED",
                 }
 
             if response.status_code != 200:
+                log_event(logger, logging.WARNING, "scan_virustotal_failed", target_id=target_id, provider="VIRUSTOTAL", status=response.status_code, error_code="VIRUSTOTAL_PROVIDER_ERROR", duration_ms=elapsed_ms(started))
                 return {
                     "status": "UNKNOWN",
                     "confidence": 0.0,
-                    "error": f"HTTP {response.status_code}",
+                    "error": "VIRUSTOTAL_PROVIDER_ERROR",
                 }
 
             data = response.json()
@@ -97,13 +101,13 @@ async def check_url_virustotal(url: str) -> Dict[str, Any]:
 
         except httpx.TimeoutException:
             log_event(logger, logging.ERROR, "virustotal_timeout", target_id=target_id, duration_ms=elapsed_ms(started))
-            return {"status": "UNKNOWN", "confidence": 0.0, "error": "VIRUSTOTAL_TIMEOUT"}
+            return {"status": "UNKNOWN", "confidence": 0.0, "error": "Timeout"}
         except httpx.RequestError as e:
             log_event(logger, logging.ERROR, "virustotal_connection_failed", target_id=target_id, error_type=safe_error(e), duration_ms=elapsed_ms(started))
             return {"status": "UNKNOWN", "confidence": 0.0, "error": "VIRUSTOTAL_NETWORK_ERROR"}
         except Exception as e:
             log_event(logger, logging.ERROR, "virustotal_check_failed", target_id=target_id, error_type=safe_error(e), duration_ms=elapsed_ms(started))
-            return {"status": "UNKNOWN", "confidence": 0.0, "error": "VIRUSTOTAL_UNEXPECTED_ERROR"}
+            return {"status": "UNKNOWN", "confidence": 0.0, "error": "VIRUSTOTAL_PROVIDER_ERROR"}
 
 
 async def _submit_url(url: str, client: httpx.AsyncClient) -> Dict[str, Any]:
@@ -124,7 +128,7 @@ async def _submit_url(url: str, client: httpx.AsyncClient) -> Dict[str, Any]:
             return {
                 "status": "UNKNOWN",
                 "confidence": 0.0,
-                "error": f"Submit failed: HTTP {response.status_code}",
+                "error": "VIRUSTOTAL_PROVIDER_ERROR",
             }
 
         url_id = _url_id(url)
@@ -149,7 +153,7 @@ async def _submit_url(url: str, client: httpx.AsyncClient) -> Dict[str, Any]:
 
     except Exception as e:
         log_event(logger, logging.ERROR, "virustotal_submit_connection_failed", target_id=target_id, error_type=safe_error(e))
-        return {"status": "UNKNOWN", "confidence": 0.0, "error": "VIRUSTOTAL_SUBMIT_ERROR"}
+        return {"status": "UNKNOWN", "confidence": 0.0, "error": "VIRUSTOTAL_NETWORK_ERROR"}
 
 
 def _parse_response(data: Dict[str, Any]) -> Dict[str, Any]:
@@ -158,18 +162,11 @@ def _parse_response(data: Dict[str, Any]) -> Dict[str, Any]:
         attributes = data.get("data", {}).get("attributes", {})
         stats = attributes.get("last_analysis_stats", {})
 
-        known_statuses = ("malicious", "suspicious", "harmless", "undetected")
-        counts = {
-            key: max(0, int(stats.get(key, 0) or 0))
-            for key in stats
-            if isinstance(stats.get(key), (int, float))
-        }
-        malicious = counts.get("malicious", 0)
-        suspicious = counts.get("suspicious", 0)
-        harmless = counts.get("harmless", 0)
-        undetected = counts.get("undetected", 0)
-        additional_statuses = {key: value for key, value in counts.items() if key not in known_statuses}
-        total = sum(counts.values())
+        malicious = stats.get("malicious", 0)
+        suspicious = stats.get("suspicious", 0)
+        harmless = stats.get("harmless", 0)
+        undetected = stats.get("undetected", 0)
+        total = malicious + suspicious + harmless + undetected
 
         reputation = attributes.get("reputation", 0)
         categories = attributes.get("categories", {})
@@ -180,7 +177,7 @@ def _parse_response(data: Dict[str, Any]) -> Dict[str, Any]:
         elif malicious >= 1 or suspicious >= 2:
             status = "SUSPICIOUS"
             confidence = 0.6
-        elif suspicious == 0 and harmless > 0 and malicious == 0:
+        elif harmless > 0 and malicious == 0:
             status = "SAFE"
             confidence = min(1.0, harmless / max(1, total))
         else:
@@ -195,8 +192,6 @@ def _parse_response(data: Dict[str, Any]) -> Dict[str, Any]:
             "harmless": harmless,
             "undetected": undetected,
             "total_engines": total,
-            "additional_engine_statuses": additional_statuses,
-            "unclassified_engines": sum(additional_statuses.values()),
             "reputation": reputation,
             "categories": categories,
         }
@@ -205,7 +200,7 @@ def _parse_response(data: Dict[str, Any]) -> Dict[str, Any]:
         return {
             "status": "UNKNOWN",
             "confidence": 0.0,
-            "error": "VIRUSTOTAL_PARSE_ERROR",
+            "error": f"Parse error: {e}",
         }
 
 

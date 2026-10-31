@@ -16,6 +16,7 @@ import { RuntimeConfigProvider, useRuntimeConfig } from './context/RuntimeConfig
 import { useLanguage } from './context/LanguageContext';
 import TermsConsentGate from './components/TermsConsentGate';
 import MaintenancePage from './components/MaintenancePage';
+import { frontendLog } from './services/observability';
 
 import Splash from './pages/auth/Splash';
 import Onboarding from './pages/auth/Onboarding';
@@ -49,7 +50,7 @@ function lazyWithRetry(componentImport) {
 class AppErrorBoundary extends Component {
   state = { hasError: false };
   static getDerivedStateFromError() { return { hasError: true }; }
-  componentDidCatch(error) { console.error('Nabeh UI render error', error); }
+  componentDidCatch(error) { frontendLog('frontend_unhandled_error', { error_type: error?.name || 'Error' }); }
   reset = () => { sessionStorage.removeItem('nabeh_chunk_retry'); window.location.reload(); };
   render() {
     if (!this.state.hasError) return this.props.children;
