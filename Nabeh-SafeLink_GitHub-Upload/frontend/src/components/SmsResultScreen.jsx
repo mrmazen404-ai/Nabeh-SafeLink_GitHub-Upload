@@ -108,6 +108,10 @@ export default function SmsResultScreen({ result, onReset, activeTab, setActiveT
   };
   const rawPortal = exp?.official_portal_url;
   const officialPortal = rawPortal && !isInvalidOrGenericPortal(rawPortal) ? rawPortal : null;
+  const hasCuratedPortal = exp?.portal_source === 'CURATED_ALLOWLIST';
+  const portalHref = hasCuratedPortal && officialPortal
+    ? (String(officialPortal).startsWith('http') ? officialPortal : `https://${officialPortal}`)
+    : null;
   const actionSteps = Array.isArray(exp?.action_plan_steps) && exp.action_plan_steps.length > 0 ? exp.action_plan_steps : [];
 
   const handleCopyReport = () => {
@@ -284,9 +288,9 @@ export default function SmsResultScreen({ result, onReset, activeTab, setActiveT
                     </h3>
                   </div>
 
-                  {officialPortal && (
+                  {portalHref && (
                     <a
-                      href={officialPortal.startsWith('http') ? officialPortal : `https://${officialPortal}`}
+                      href={portalHref}
                       target="_blank"
                       rel="noopener noreferrer"
                       className="btn btn-primary"
@@ -326,12 +330,10 @@ export default function SmsResultScreen({ result, onReset, activeTab, setActiveT
                   <span>{lang === 'ar' ? 'نطاق مرجعي محتمل:' : 'Potential reference domain:'}</span>
                 </h3>
                 <div style={{ marginTop: '8px', wordBreak: 'break-all', fontSize: '0.85rem', fontWeight: 'bold', color: 'var(--color-success)' }}>
-                  <a href={officialPortal.startsWith('http') ? officialPortal : `https://${officialPortal}`} target="_blank" rel="noopener noreferrer" style={{ color: 'inherit', textDecoration: 'underline' }}>
-                    {officialPortal}
-                  </a>
+                  {portalHref ? <a href={portalHref} target="_blank" rel="noopener noreferrer" style={{ color: 'inherit', textDecoration: 'underline' }}>{officialPortal}</a> : officialPortal}
                 </div>
                 <p style={{ fontSize: '0.78rem', color: 'var(--color-text-subtle)', marginTop: '6px', margin: 0 }}>
-                  {lang === 'ar' ? 'هذا نطاق مرجعي محفوظ في النظام وليس تحققًا مباشرًا من هوية الرسالة؛ تأكد من العنوان قبل إدخال أي بيانات.' : 'This is a stored reference domain, not live verification of the message. Confirm the address before entering data.'}
+                  {lang === 'ar' ? (portalHref ? 'هذا نطاق مرجعي محفوظ في قائمة موثوقة؛ لا يثبت هوية الرسالة.' : 'هذا اقتراح مرجعي غير موثق؛ لا نفتحه تلقائياً ولا يثبت هوية الرسالة.') : (portalHref ? 'This is a curated reference domain; it does not verify the message identity.' : 'This is an unverified reference suggestion; it is not clickable and does not verify the message identity.')}
                 </p>
               </div>
             )}
@@ -376,12 +378,13 @@ export default function SmsResultScreen({ result, onReset, activeTab, setActiveT
                       ? linkMl
                       : linkMlStatus}
                   </p>
-                  {engines > 0 && (
+                  {(engines > 0 || linkVt.status || linkVt.error) && (
                     <div className="details-grid">
                       <div className="detail-item"><span className="detail-label">{t('result.vtDangerous')}</span><span className="detail-value" style={{ color: 'var(--color-danger)' }}>{vtMalicious}</span></div>
                       <div className="detail-item"><span className="detail-label">{t('result.vtSuspicious')}</span><span className="detail-value" style={{ color: 'var(--color-warning)' }}>{vtSuspicious}</span></div>
                       <div className="detail-item"><span className="detail-label">{t('result.vtSafe')}</span><span className="detail-value" style={{ color: 'var(--color-success)' }}>{vtHarmless}</span></div>
                       <div className="detail-item"><span className="detail-label">{t('result.vtTotal')}</span><span className="detail-value">{engines}</span></div>
+                      {engines === 0 && <div className="detail-item" style={{ gridColumn: '1 / -1' }}><span className="detail-label">VirusTotal status</span><span className="detail-value">{linkVt.error || linkVt.status || 'UNKNOWN'}</span></div>}
                     </div>
                   )}
                 </div>

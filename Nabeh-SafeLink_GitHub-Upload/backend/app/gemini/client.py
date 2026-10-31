@@ -192,8 +192,8 @@ Evidence Data:
 {json.dumps(safe_evidence, ensure_ascii=False)}
 
 Cybersecurity Research Instructions:
-1. Search and identify the true official registered domain for any organization or brand mentioned or impersonated in the input URL.
-2. Compare the input URL's domain against the official domain and highlight any discrepancies, typosquatting, or spoofing.
+1. Do not identify, certify, or invent an official registered domain from a brand mention. No sender, domain, or portal is verified by this analysis alone.
+2. Compare only the supplied URL structure and explicit evidence. Describe a possible impersonation as unverified; never call a domain official, verified, or trusted.
 3. Analyze deceptive URL structure, the categorical ML signal, and available VirusTotal engine findings.
 4. Do not alter the Primary Security Classification.
 

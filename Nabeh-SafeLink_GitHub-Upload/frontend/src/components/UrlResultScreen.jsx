@@ -78,6 +78,15 @@ export default function UrlResultScreen({ result, onReset, activeTab, setActiveT
   const mlClassification = String(ml.classification || '').toUpperCase();
   const hasUsableMlResult = mlSource === 'ML_MODEL'
     && ['SAFE', 'SUSPICIOUS', 'DANGEROUS'].includes(mlClassification);
+  const mlStatusLabel = mlSource === 'INVALID_URL'
+    ? (lang === 'ar' ? 'الرابط غير صالح نحوياً؛ لم يُشغّل النموذج' : 'Invalid URL syntax; model was not run')
+    : mlSource === 'MODEL_ERROR'
+      ? (lang === 'ar' ? 'حدث خطأ أثناء تشغيل النموذج' : 'Model execution error')
+      : mlSource === 'MODEL_UNAVAILABLE'
+        ? (lang === 'ar' ? 'النموذج غير متاح' : 'Model unavailable')
+        : (lang === 'ar' ? 'النتيجة غير محسومة' : 'Inconclusive model result');
+  const vtStatus = String(vt.status || '').toUpperCase();
+  const hasVtStatus = Boolean(vtStatus || vt.error);
 
   const totalEngines = vt.total_engines || 0;
   const geminiProvider = String(exp.provider || result?.stages?.stage3_gemini?.provider || '').toUpperCase();
@@ -216,7 +225,7 @@ export default function UrlResultScreen({ result, onReset, activeTab, setActiveT
           {/* Engine Side Panel */}
           <aside className="result-side-panel">
             {/* VirusTotal 92+ Engines Visual Proportional Distribution Chart */}
-            {totalEngines > 0 && (
+            {(totalEngines > 0 || hasVtStatus) && (
               <div className="card details-block">
                 <h3 className="details-title">
                   <ShieldCheckIcon size={18} color="var(--color-secondary)" />
@@ -224,11 +233,11 @@ export default function UrlResultScreen({ result, onReset, activeTab, setActiveT
                 </h3>
 
                 {/* Proportional Stacked Progress Bar */}
-                <div style={{ height: '10px', display: 'flex', borderRadius: '5px', overflow: 'hidden', margin: '12px 0 16px 0', background: 'var(--color-bg-subtle)' }}>
+                {totalEngines > 0 && <div style={{ height: '10px', display: 'flex', borderRadius: '5px', overflow: 'hidden', margin: '12px 0 16px 0', background: 'var(--color-bg-subtle)' }}>
                   {vt.malicious > 0 && <div style={{ width: `${maliciousPct}%`, background: 'var(--color-danger)' }} title={`Malicious: ${vt.malicious}`} />}
                   {vt.suspicious > 0 && <div style={{ width: `${suspiciousPct}%`, background: 'var(--color-warning)' }} title={`Suspicious: ${vt.suspicious}`} />}
                   {vt.harmless > 0 && <div style={{ width: `${harmlessPct}%`, background: 'var(--color-success)' }} title={`Harmless: ${vt.harmless}`} />}
-                </div>
+                </div>}
 
                 <div className="details-grid">
                   <div className="detail-item">
@@ -248,6 +257,13 @@ export default function UrlResultScreen({ result, onReset, activeTab, setActiveT
                     <span className="detail-value">{totalEngines}</span>
                   </div>
                 </div>
+                {totalEngines === 0 && (
+                  <p className="muted" role="status" style={{ marginTop: '12px' }}>
+                    {vt.error || (vtStatus === 'NOT_APPLICABLE'
+                      ? (lang === 'ar' ? 'لم يُطبّق VirusTotal على هذا الإدخال.' : 'VirusTotal was not applicable to this input.')
+                      : (lang === 'ar' ? `حالة VirusTotal: ${vtStatus || 'UNKNOWN'}؛ لا تُعد هذه النتيجة دليلاً على السلامة.` : `VirusTotal status: ${vtStatus || 'UNKNOWN'}; this is not evidence of safety.`))}
+                  </p>
+                )}
               </div>
             )}
 
@@ -269,6 +285,12 @@ export default function UrlResultScreen({ result, onReset, activeTab, setActiveT
                     {lang === 'ar' ? 'توقع النموذج إشارة واحدة وليس إثباتاً نهائياً؛ لا تُعرض نسبة غير معايرة.' : 'The model output is one signal, not proof; uncalibrated percentages are withheld.'}
                   </p>
                 </div>
+              </div>
+            )}
+            {!hasUsableMlResult && mlSource && (
+              <div className="card ml-details-block" role="status">
+                <div className="ml-header"><CpuIcon size={18} color="var(--color-secondary)" /><h3 className="details-title" style={{ margin: 0 }}>{t('result.mlModelTitle')}</h3></div>
+                <p className="muted" style={{ margin: '10px 0 0' }}>{mlStatusLabel}</p>
               </div>
             )}
 

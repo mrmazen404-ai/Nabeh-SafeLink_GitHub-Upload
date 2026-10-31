@@ -97,13 +97,13 @@ async def check_url_virustotal(url: str) -> Dict[str, Any]:
 
         except httpx.TimeoutException:
             log_event(logger, logging.ERROR, "virustotal_timeout", target_id=target_id, duration_ms=elapsed_ms(started))
-            return {"status": "UNKNOWN", "confidence": 0.0, "error": "Timeout"}
+            return {"status": "UNKNOWN", "confidence": 0.0, "error": "VIRUSTOTAL_TIMEOUT"}
         except httpx.RequestError as e:
             log_event(logger, logging.ERROR, "virustotal_connection_failed", target_id=target_id, error_type=safe_error(e), duration_ms=elapsed_ms(started))
-            return {"status": "UNKNOWN", "confidence": 0.0, "error": str(e)}
+            return {"status": "UNKNOWN", "confidence": 0.0, "error": "VIRUSTOTAL_NETWORK_ERROR"}
         except Exception as e:
             log_event(logger, logging.ERROR, "virustotal_check_failed", target_id=target_id, error_type=safe_error(e), duration_ms=elapsed_ms(started))
-            return {"status": "UNKNOWN", "confidence": 0.0, "error": f"Unexpected: {e}"}
+            return {"status": "UNKNOWN", "confidence": 0.0, "error": "VIRUSTOTAL_UNEXPECTED_ERROR"}
 
 
 async def _submit_url(url: str, client: httpx.AsyncClient) -> Dict[str, Any]:
@@ -149,7 +149,7 @@ async def _submit_url(url: str, client: httpx.AsyncClient) -> Dict[str, Any]:
 
     except Exception as e:
         log_event(logger, logging.ERROR, "virustotal_submit_connection_failed", target_id=target_id, error_type=safe_error(e))
-        return {"status": "UNKNOWN", "confidence": 0.0, "error": str(e)}
+        return {"status": "UNKNOWN", "confidence": 0.0, "error": "VIRUSTOTAL_SUBMIT_ERROR"}
 
 
 def _parse_response(data: Dict[str, Any]) -> Dict[str, Any]:
@@ -158,11 +158,18 @@ def _parse_response(data: Dict[str, Any]) -> Dict[str, Any]:
         attributes = data.get("data", {}).get("attributes", {})
         stats = attributes.get("last_analysis_stats", {})
 
-        malicious = stats.get("malicious", 0)
-        suspicious = stats.get("suspicious", 0)
-        harmless = stats.get("harmless", 0)
-        undetected = stats.get("undetected", 0)
-        total = malicious + suspicious + harmless + undetected
+        known_statuses = ("malicious", "suspicious", "harmless", "undetected")
+        counts = {
+            key: max(0, int(stats.get(key, 0) or 0))
+            for key in stats
+            if isinstance(stats.get(key), (int, float))
+        }
+        malicious = counts.get("malicious", 0)
+        suspicious = counts.get("suspicious", 0)
+        harmless = counts.get("harmless", 0)
+        undetected = counts.get("undetected", 0)
+        additional_statuses = {key: value for key, value in counts.items() if key not in known_statuses}
+        total = sum(counts.values())
 
         reputation = attributes.get("reputation", 0)
         categories = attributes.get("categories", {})
@@ -188,6 +195,8 @@ def _parse_response(data: Dict[str, Any]) -> Dict[str, Any]:
             "harmless": harmless,
             "undetected": undetected,
             "total_engines": total,
+            "additional_engine_statuses": additional_statuses,
+            "unclassified_engines": sum(additional_statuses.values()),
             "reputation": reputation,
             "categories": categories,
         }
@@ -196,7 +205,7 @@ def _parse_response(data: Dict[str, Any]) -> Dict[str, Any]:
         return {
             "status": "UNKNOWN",
             "confidence": 0.0,
-            "error": f"Parse error: {e}",
+            "error": "VIRUSTOTAL_PARSE_ERROR",
         }
 
 

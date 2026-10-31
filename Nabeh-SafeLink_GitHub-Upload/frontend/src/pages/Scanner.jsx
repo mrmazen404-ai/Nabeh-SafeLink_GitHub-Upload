@@ -405,7 +405,9 @@ export default function Scanner({ initialUrl = '', onClearInitial, activeTab, se
 
             <div className="recent-list">
               {recentScans.length === 0 ? <p role="status">{t('scanner.noRecentScans')}</p> : recentScans.map((scan, idx) => {
-                const statusKey = scan.classification || 'SAFE';
+                const statusKey = ['SAFE', 'SUSPICIOUS', 'DANGEROUS', 'UNKNOWN'].includes(scan.classification)
+                  ? scan.classification
+                  : 'UNKNOWN';
                 const cfg = STATUS_CFG[statusKey] || STATUS_CFG.UNKNOWN;
                 const statusLabel = statusKey === 'SAFE' ? t('result.safeLabelAr') : statusKey === 'SUSPICIOUS' ? t('result.suspiciousLabelAr') : statusKey === 'DANGEROUS' ? t('result.dangerousLabelAr') : t('result.unknownLabelAr');
                 const StatusSvg = cfg.icon;
