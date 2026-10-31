@@ -9,11 +9,12 @@ import asyncio
 import json
 import re
 import logging
+import time
 from google import genai
 from google.genai import types
 from app.config import settings
 from app.gemini.schemas import GeminiSMSAnalysis, validate_gemini_payload, validate_gemini_sms_payload
-from app.observability import log_event, resource_id, safe_error
+from app.observability import elapsed_ms, log_event, resource_id, safe_error
 from app.scans.text_rules import analyze_message_indicators
 
 client = None
@@ -119,6 +120,20 @@ def _is_rate_limited_error(error: Exception) -> bool:
     return any(str(value).upper() in {"429", "RESOURCE_EXHAUSTED"} for value in candidates if value is not None)
 
 
+def _provider_error_code(error: Exception) -> str | None:
+    """Return only a short provider error code; never log provider messages or payloads."""
+    response = getattr(error, "response", None)
+    for value in (
+        getattr(error, "status_code", None),
+        getattr(error, "code", None),
+        getattr(response, "status_code", None),
+        getattr(error, "status", None),
+    ):
+        if isinstance(value, (str, int)) and str(value):
+            return str(value)[:40]
+    return None
+
+
 def _retry_after_seconds(error: Exception, attempt: int) -> float:
     response = getattr(error, "response", None)
     headers = getattr(response, "headers", {}) or {}
@@ -165,6 +180,7 @@ async def generate_explanation(
     evidence = evidence or {}
     untrusted_url_json = json.dumps({"url": (input_value or "")[:300]}, ensure_ascii=False)
     operation_id = resource_id(input_value)
+    operation_started = time.perf_counter()
     log_event(logger, logging.INFO, "gemini_explanation_started", operation_id=operation_id, classification=classification, language=language)
     ml_evidence = evidence.get("ml", {})
     vt_evidence = evidence.get("virustotal", {})
@@ -210,18 +226,19 @@ Respond ONLY in valid JSON matching this exact structure:
     current_key = _get_api_key()
     if not current_key:
         _set_provider_status("not_configured")
-        log_event(logger, logging.WARNING, "gemini_provider_not_configured", operation_id=operation_id)
+        log_event(logger, logging.WARNING, "gemini_provider_not_configured", operation_id=operation_id, fallback_reason="GEMINI_API_KEY_MISSING", duration_ms=elapsed_ms(operation_started))
         return _sanitized_local_explanation(classification, language, input_value, evidence)
 
     gemini_client = _get_client()
     if gemini_client is None:
         _set_provider_status("unavailable")
-        log_event(logger, logging.WARNING, "gemini_client_unavailable", operation_id=operation_id)
+        log_event(logger, logging.WARNING, "gemini_client_unavailable", operation_id=operation_id, fallback_reason="CLIENT_UNAVAILABLE", duration_ms=elapsed_ms(operation_started))
         return _sanitized_local_explanation(classification, language, input_value, evidence)
 
     # Multi-tier model fallback cascade: iterates through every model until a successful response
     for model_name in PRIMARY_MODELS:
         _set_provider_status("attempting")
+        model_started = time.perf_counter()
         log_event(logger, logging.INFO, "gemini_model_attempt_started", operation_id=operation_id, model=model_name, mode="search")
 
         # Mode 1: Search Grounded Generation
@@ -248,17 +265,18 @@ Respond ONLY in valid JSON matching this exact structure:
                 input_value=input_value,
                 evidence=evidence,
             )
-            log_event(logger, logging.INFO, "gemini_model_succeeded", operation_id=operation_id, model=model_name, mode="search")
+            log_event(logger, logging.INFO, "gemini_model_succeeded", operation_id=operation_id, model=model_name, mode="search", duration_ms=elapsed_ms(model_started), parse_status="valid_json")
             _set_provider_status("ready", "GEMINI_SEARCH")
             return result
         except Exception as error:
             _set_provider_status("failed", error=error)
-            log_event(logger, logging.WARNING, "gemini_model_attempt_failed", operation_id=operation_id, model=model_name, mode="search", error_type=safe_error(error))
+            log_event(logger, logging.WARNING, "gemini_model_attempt_failed", operation_id=operation_id, model=model_name, mode="search", error_type=safe_error(error), error_code=_provider_error_code(error), duration_ms=elapsed_ms(model_started))
             if _is_rate_limited_error(error):
-                log_event(logger, logging.WARNING, "gemini_rate_limited_fallback", operation_id=operation_id)
+                log_event(logger, logging.WARNING, "gemini_rate_limited_fallback", operation_id=operation_id, model=model_name, mode="search", fallback_reason="RATE_LIMITED")
                 break
 
         # Mode 2: Standard Gemini JSON Generation
+        model_started = time.perf_counter()
         try:
             response = await _generate_content_with_rate_limit_retry(
                 gemini_client, model=model_name, contents=prompt, operation_id=operation_id,
@@ -284,7 +302,7 @@ Respond ONLY in valid JSON matching this exact structure:
                     input_value=input_value,
                     evidence=evidence,
                 )
-                log_event(logger, logging.INFO, "gemini_model_succeeded", operation_id=operation_id, model=model_name, mode="json")
+                log_event(logger, logging.INFO, "gemini_model_succeeded", operation_id=operation_id, model=model_name, mode="json", duration_ms=elapsed_ms(model_started), parse_status="valid_json")
                 _set_provider_status("ready", "GEMINI")
                 return result
             except json.JSONDecodeError:
@@ -298,19 +316,19 @@ Respond ONLY in valid JSON matching this exact structure:
                         input_value=input_value,
                         evidence=evidence,
                     )
-                    log_event(logger, logging.INFO, "gemini_model_succeeded", operation_id=operation_id, model=model_name, mode="text_fallback")
+                    log_event(logger, logging.INFO, "gemini_model_succeeded", operation_id=operation_id, model=model_name, mode="text_fallback", duration_ms=elapsed_ms(model_started), parse_status="invalid_json_text_salvaged")
                     _set_provider_status("ready", "GEMINI")
                     return result
 
         except Exception as e:
             _set_provider_status("failed", error=e)
-            log_event(logger, logging.WARNING, "gemini_provider_request_failed", operation_id=operation_id, model=model_name, error_type=safe_error(e))
+            log_event(logger, logging.WARNING, "gemini_provider_request_failed", operation_id=operation_id, model=model_name, mode="json", error_type=safe_error(e), error_code=_provider_error_code(e), duration_ms=elapsed_ms(model_started))
             if _is_rate_limited_error(e):
-                log_event(logger, logging.WARNING, "gemini_rate_limited_fallback", operation_id=operation_id)
+                log_event(logger, logging.WARNING, "gemini_rate_limited_fallback", operation_id=operation_id, model=model_name, mode="json", fallback_reason="RATE_LIMITED")
                 break
             continue
 
-    log_event(logger, logging.WARNING, "gemini_provider_fallback_used", operation_id=operation_id)
+    log_event(logger, logging.WARNING, "gemini_provider_fallback_used", operation_id=operation_id, fallback_reason="ALL_MODELS_FAILED", duration_ms=elapsed_ms(operation_started))
     return _sanitized_local_explanation(classification, language, input_value, evidence)
 
 
@@ -382,13 +400,16 @@ Do not return probability, confidence, or numeric risk scores.
 
     if not current_key:
         _set_provider_status("not_configured")
+        log_event(logger, logging.WARNING, "gemini_sms_provider_not_configured", operation_id=operation_id, fallback_reason="GEMINI_API_KEY_MISSING")
     elif gemini_client is None:
         _set_provider_status("unavailable")
+        log_event(logger, logging.WARNING, "gemini_sms_client_unavailable", operation_id=operation_id, fallback_reason="CLIENT_UNAVAILABLE")
 
     if gemini_client:
         for model_name in PRIMARY_MODELS:
             _set_provider_status("attempting")
-            log_event(logger, logging.INFO, "gemini_sms_model_attempt_started", operation_id=operation_id, model=model_name)
+            model_started = time.perf_counter()
+            log_event(logger, logging.INFO, "gemini_sms_model_attempt_started", operation_id=operation_id, model=model_name, mode="search")
 
             # Mode 1: Search Grounded Generation for SMS Research
             try:
@@ -406,21 +427,22 @@ Do not return probability, confidence, or numeric risk scores.
 
                 parsed = validate_gemini_sms_payload(json.loads(text_clean), fallback=local_fallback)
                 if parsed.get("provider") == "LOCAL_SCHEMA_FALLBACK":
-                    log_event(logger, logging.WARNING, "gemini_sms_schema_validation_failed", operation_id=operation_id, model=model_name, mode="search")
+                    log_event(logger, logging.WARNING, "gemini_sms_schema_validation_failed", operation_id=operation_id, model=model_name, mode="search", parse_status="schema_invalid", duration_ms=elapsed_ms(model_started))
                     continue
                 parsed["provider"] = f"GEMINI_SEARCH ({model_name})"
                 parsed = _sanitize_official_portal_url(parsed, text_content, extracted_url)
-                log_event(logger, logging.INFO, "gemini_sms_analysis_succeeded", operation_id=operation_id, model=model_name, mode="search")
+                log_event(logger, logging.INFO, "gemini_sms_analysis_succeeded", operation_id=operation_id, model=model_name, mode="search", parse_status="valid_json", duration_ms=elapsed_ms(model_started))
                 _set_provider_status("ready", "GEMINI_SEARCH")
                 return parsed
             except Exception as error:
                 _set_provider_status("failed", error=error)
-                log_event(logger, logging.WARNING, "gemini_sms_search_attempt_failed", operation_id=operation_id, model=model_name, error_type=safe_error(error))
+                log_event(logger, logging.WARNING, "gemini_sms_search_attempt_failed", operation_id=operation_id, model=model_name, mode="search", error_type=safe_error(error), error_code=_provider_error_code(error), duration_ms=elapsed_ms(model_started))
                 if _is_rate_limited_error(error):
-                    log_event(logger, logging.WARNING, "gemini_sms_rate_limited_fallback", operation_id=operation_id)
+                    log_event(logger, logging.WARNING, "gemini_sms_rate_limited_fallback", operation_id=operation_id, model=model_name, mode="search", fallback_reason="RATE_LIMITED")
                     break
 
             # Mode 2: Standard JSON Schema Generation
+            model_started = time.perf_counter()
             try:
                 response = await _generate_content_with_rate_limit_retry(
                     gemini_client, model=model_name, contents=prompt, operation_id=operation_id,
@@ -437,22 +459,23 @@ Do not return probability, confidence, or numeric risk scores.
 
                 parsed = validate_gemini_sms_payload(json.loads(text_clean), fallback=local_fallback)
                 if parsed.get("provider") == "LOCAL_SCHEMA_FALLBACK":
-                    log_event(logger, logging.WARNING, "gemini_sms_schema_validation_failed", operation_id=operation_id, model=model_name, mode="json")
+                    log_event(logger, logging.WARNING, "gemini_sms_schema_validation_failed", operation_id=operation_id, model=model_name, mode="json", parse_status="schema_invalid", duration_ms=elapsed_ms(model_started))
                     continue
                 parsed["provider"] = f"GEMINI_AI ({model_name})"
                 parsed = _sanitize_official_portal_url(parsed, text_content, extracted_url)
-                log_event(logger, logging.INFO, "gemini_sms_analysis_succeeded", operation_id=operation_id, model=model_name, mode="json")
+                log_event(logger, logging.INFO, "gemini_sms_analysis_succeeded", operation_id=operation_id, model=model_name, mode="json", parse_status="valid_json", duration_ms=elapsed_ms(model_started))
                 _set_provider_status("ready", "GEMINI")
                 return parsed
             except Exception as error:
                 _set_provider_status("failed", error=error)
-                log_event(logger, logging.WARNING, "gemini_sms_json_attempt_failed", operation_id=operation_id, model=model_name, error_type=safe_error(error))
+                log_event(logger, logging.WARNING, "gemini_sms_json_attempt_failed", operation_id=operation_id, model=model_name, mode="json", error_type=safe_error(error), error_code=_provider_error_code(error), duration_ms=elapsed_ms(model_started))
                 if _is_rate_limited_error(error):
-                    log_event(logger, logging.WARNING, "gemini_sms_rate_limited_fallback", operation_id=operation_id)
+                    log_event(logger, logging.WARNING, "gemini_sms_rate_limited_fallback", operation_id=operation_id, model=model_name, mode="json", fallback_reason="RATE_LIMITED")
                     break
                 continue
 
     local_fallback["provider"] = "LOCAL_AI_RULES"
+    log_event(logger, logging.WARNING, "gemini_sms_fallback_used", operation_id=operation_id, fallback_reason="ALL_MODELS_FAILED" if gemini_client else "PROVIDER_UNAVAILABLE")
     return _sanitize_official_portal_url(local_fallback, text_content, extracted_url)
 
 
