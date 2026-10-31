@@ -474,21 +474,11 @@ def _sanitize_official_portal_url(parsed: dict, text_content: str, extracted_url
     if not isinstance(parsed, dict):
         return parsed
 
-    matched_official_domain = _matched_known_brand_domain(text_content, extracted_url)
-    no_www_domains = {"iam.gov.sa", "tawakkalna.sdaia.gov.sa"}
-    matched_official_portal = (
-        f"https://{matched_official_domain}" if matched_official_domain in no_www_domains
-        else f"https://www.{matched_official_domain}" if matched_official_domain
-        else None
-    )
-
-    if matched_official_portal:
-        parsed["official_portal_url"] = matched_official_portal
-        parsed["official_domain"] = matched_official_domain
-    else:
-        # Never pass through an unverified model-suggested portal or domain.
-        parsed["official_portal_url"] = "غير متاح"
-        parsed["official_domain"] = "غير متاح"
+    # A brand mention is not proof that the sender or claim is authentic. Do
+    # not manufacture a navigation target from a local brand list. A future
+    # verified-source contract may populate these fields explicitly.
+    parsed["official_portal_url"] = "غير متاح"
+    parsed["official_domain"] = "غير متاح"
 
     return parsed
 
@@ -525,12 +515,7 @@ def _local_sms_analysis(text_content: str, extracted_url: str = "", language: st
         reasons.append("لم تظهر إشارة محلية كافية للحكم؛ غياب الإشارة لا يثبت السلامة." if is_ar else "No sufficient local signal was found; absence of a signal is not proof of safety.")
 
     matched_domain = _matched_known_brand_domain(text_content, extracted_url)
-    no_www_domains = {"iam.gov.sa", "tawakkalna.sdaia.gov.sa"}
-    official_portal = (
-        f"https://{matched_domain}" if matched_domain in no_www_domains
-        else f"https://www.{matched_domain}" if matched_domain
-        else "غير متاح"
-    )
+    official_portal = "غير متاح"
     action_steps = [
         "لا تفتح رابطًا غير متحقق منه ولا تشارك رمز تحقق أو كلمة مرور." if is_ar else "Do not open an unverified link or share an OTP or password.",
         "تحقق من الجهة عبر تطبيقها الرسمي أو اكتب عنوانها بنفسك." if is_ar else "Verify through the official app or by entering its address yourself.",
@@ -548,7 +533,7 @@ def _local_sms_analysis(text_content: str, extracted_url: str = "", language: st
         "reasons": reasons,
         "recommendation": recommendation,
         "official_portal_url": official_portal,
-        "official_domain": matched_domain or "غير متاح",
+        "official_domain": "غير متاح",
         "claim_verdict_explanation": "لا يمكن التحقق من الادعاء بالأدلة المتاحة." if is_ar else "The claim cannot be verified from the available evidence.",
         "action_plan_steps": action_steps,
         "authenticity_status": "غير متحقق" if is_ar else "Unverified",
@@ -708,10 +693,10 @@ def _local_explanation(
             else:
                 reasons.append("Detected unusual security risk indicators in domain structure and metadata.")
         else:
-            if is_ar:
-                reasons.append("نطاق معتمد وموثوق خالٍ من مؤشرات التهديد السيبراني.")
+            if classification == "SAFE":
+                reasons.append("لم تُرصد مؤشرات خطر في الأدلة المتاحة، لكن ذلك لا يثبت أصالة النطاق." if is_ar else "No risk indicator was found in the available evidence; this does not prove domain authenticity.")
             else:
-                reasons.append("Verified trusted domain with no security threat indicators.")
+                reasons.append("لا تتوفر أدلة كافية لإصدار حكم نهائي؛ غياب المؤشرات لا يثبت السلامة." if is_ar else "There is not enough evidence for a final verdict; absence of indicators is not proof of safety.")
 
     display_target = host if host else "الرابط"
     if classification == "DANGEROUS":
@@ -730,11 +715,11 @@ def _local_explanation(
             recommendation = "Verify the official source and avoid entering sensitive information."
     elif classification == "SAFE":
         if is_ar:
-            summary = f"الرابط آمن وموثوق: ينتمي '{display_target}' إلى نطاق موثوق معتمد وتأكدت سلامته عبر محركات الفحص."
-            recommendation = "يمكنك التصفح والمتابعة بأمان."
+            summary = f"لم تُرصد مؤشرات خطر في الرابط '{display_target}' ضمن الأدلة المتاحة، لكن لم يتم إثبات أصالته."
+            recommendation = "تحقق من النطاق عبر قناة رسمية مستقلة قبل إدخال أي بيانات."
         else:
-            summary = f"Safe Link: URL '{display_target}' belongs to a trusted domain verified by security engines."
-            recommendation = "You can proceed safely."
+            summary = f"No risk indicators were found for URL '{display_target}' in the available evidence, but authenticity was not verified."
+            recommendation = "Verify the domain through an independent official channel before entering data."
     else:
         if is_ar:
             summary = f"تعذر التحقق بدقة من الرابط '{display_target}'. يرجى توخي الحذر."
@@ -750,7 +735,11 @@ def _local_explanation(
     if "prize" in full_url_lower or "reward" in full_url_lower or "مبروك" in full_url_lower:
         lure_str = "ادعاء فوز بجائزة أو مكافأة مالية" if is_ar else "Fake prize/reward claim"
 
-    auth_status = "احتيالية (Fake SMS)" if classification == "DANGEROUS" else "مشبوهة (Unverified)" if classification == "SUSPICIOUS" else "رسمية (Official SMS)"
+    auth_status = (
+        "احتيالية (Fake SMS)" if classification == "DANGEROUS"
+        else "مشبوهة (Unverified)" if classification == "SUSPICIOUS"
+        else "لم يتم التحقق (Unverified)" if is_ar else "Unverified"
+    )
 
     return {
         "classification": classification,

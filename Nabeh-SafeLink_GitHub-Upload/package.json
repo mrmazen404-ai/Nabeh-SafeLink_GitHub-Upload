@@ -3,6 +3,6 @@
   "version": "1.0.0",
   "private": true,
   "scripts": {
-    "build": "npm --prefix frontend ci && npm --prefix frontend run build && cp -R frontend/dist/. public/"
+    "build": "npm --prefix frontend ci && npm --prefix frontend run build && rm -rf public/* && cp -R frontend/dist/. public/"
   }
 }

@@ -493,7 +493,7 @@ class ScanService:
             "ml": ml_result,
             "virustotal": vt_result,
             "input_type": "TEXT",
-            "extracted_url": extracted_url,
+            "extracted_url": selected_url or extracted_url,
             "selected_url": selected_url,
             "embedded_url_analyses": [
                 {
@@ -597,7 +597,7 @@ class ScanService:
             "scan_kind": "SMS_TEXT",
             "input_type": "TEXT",
             "input_value": text_content,
-            "extracted_url": extracted_url or None,
+            "extracted_url": selected_url or extracted_url or None,
             "selected_url": selected_url,
             "extracted_urls": all_extracted_urls,
             "links_scanned_count": len(embedded_url_analyses),
@@ -796,7 +796,12 @@ class ScanService:
                     "created_at": now_iso,
                     "title": "اكتمل فحص جديد",
                 }
-                await manager.broadcast(user_id, event)
+                try:
+                    await manager.broadcast(user_id, event)
+                except Exception:
+                    # Persistence already succeeded; a disconnected client must
+                    # never turn a completed scan into a retry/duplicate.
+                    logger.warning("scan_completed_broadcast_failed", exc_info=True)
                 if scan_res.get("classification") == "DANGEROUS":
                     notification = {
                         "user_id": user_id,
@@ -811,12 +816,15 @@ class ScanService:
                     except Exception:
                         logger.warning("dangerous_notification_persistence_failed")
                         notification_data = notification
-                    await manager.broadcast(user_id, {
-                        "type": "security_alert",
-                        "severity": "critical",
-                        "notification": notification_data,
-                        "created_at": now_iso,
-                    })
+                    try:
+                        await manager.broadcast(user_id, {
+                            "type": "security_alert",
+                            "severity": "critical",
+                            "notification": notification_data,
+                            "created_at": now_iso,
+                        })
+                    except Exception:
+                        logger.warning("security_alert_broadcast_failed", exc_info=True)
                 log_event(logger, logging.INFO, "authenticated_scan_persisted", operation_id=operation_id, scan_id=scan_id)
         except Exception:
             logger.error("authenticated_scan_persistence_failed")

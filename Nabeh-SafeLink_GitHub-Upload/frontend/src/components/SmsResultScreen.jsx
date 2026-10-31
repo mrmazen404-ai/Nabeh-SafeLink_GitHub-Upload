@@ -79,7 +79,7 @@ export default function SmsResultScreen({ result, onReset, activeTab, setActiveT
     : (extractedUrl ? [extractedUrl] : []);
   const linkAnalyses = Array.isArray(result?.embedded_url_analyses) && result.embedded_url_analyses.length
     ? result.embedded_url_analyses
-    : (extractedUrl ? [{ url: extractedUrl, classification: result?.classification || 'UNKNOWN', ml_classification: ml.classification, ml_source: ml.source, virustotal: vt }] : []);
+    : (extractedUrl ? [{ url: extractedUrl, classification: 'UNKNOWN', ml_classification: 'UNKNOWN', ml_source: 'UNAVAILABLE', virustotal: { status: 'UNKNOWN', total_engines: 0 } }] : []);
   const linksScannedCount = Number(result?.links_scanned_count ?? linkAnalyses.length);
   const linksNotScannedCount = Number(result?.links_not_scanned_count || 0);
   const provider = String(exp?.provider || result?.source || '').toUpperCase();

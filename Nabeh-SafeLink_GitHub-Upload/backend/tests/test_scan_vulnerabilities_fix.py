@@ -44,10 +44,11 @@ def test_local_sms_analysis_normal_text_is_inconclusive():
     assert res["official_portal_url"] == "غير متاح"
 
 
-def test_local_sms_analysis_known_brand_matches_official_portal():
+def test_local_sms_analysis_known_brand_does_not_verify_official_portal():
     kuraimi_text = "جائزة من بنك الكريمي ادخل https://kuraimi-fake.com/login"
     res = _local_sms_analysis(text_content=kuraimi_text, extracted_url="https://kuraimi-fake.com/login", language="ar")
-    assert res["official_portal_url"] == "https://www.kuraimibank.com"
+    # A brand mention is not deterministic proof of sender identity.
+    assert res["official_portal_url"] == "غير متاح"
 
 
 def test_dynamic_social_engineering_risk_scores():
@@ -80,10 +81,10 @@ def test_sanitize_official_portal_url_removes_generic_hallucinations():
     cleaned_1 = _sanitize_official_portal_url(hallucinated_payload, "رسالة عادية لا تنتمي لأي جهة", "")
     assert cleaned_1["official_portal_url"] == "غير متاح"
 
-    # 2. Known brand mentioned -> sanitized to exact verified brand portal
+    # 2. Known brand mentioned is still not proof of an official portal.
     kuraimi_payload = {"official_portal_url": "https://fake.com", "summary": "Test"}
     cleaned_2 = _sanitize_official_portal_url(kuraimi_payload, "تحديث حسابك في بنك الكريمي", "https://fake-link.com")
-    assert cleaned_2["official_portal_url"] == "https://www.kuraimibank.com"
+    assert cleaned_2["official_portal_url"] == "غير متاح"
 
 
 
@@ -126,8 +127,8 @@ def test_sanitizer_recognizes_brand_tokens_but_not_substrings():
         "Your PayPal account needs verification",
         "https://paypal-login.example/verify",
     )
-    assert branded["official_portal_url"] == "https://www.paypal.com"
-    assert branded["official_domain"] == "paypal.com"
+    assert branded["official_portal_url"] == "غير متاح"
+    assert branded["official_domain"] == "غير متاح"
 
 
 def test_extract_urls_from_text_returns_distinct_links_in_message_order():
