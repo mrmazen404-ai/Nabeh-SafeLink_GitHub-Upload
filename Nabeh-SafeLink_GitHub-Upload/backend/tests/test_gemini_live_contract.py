@@ -65,3 +65,17 @@ def test_sms_gemini_contract_returns_provider_and_classification(monkeypatch):
 
     assert result["provider"].startswith("GEMINI")
     assert result["classification"] == "DANGEROUS"
+
+
+def test_local_url_explanation_does_not_publish_uncalibrated_probability():
+    from app.gemini.client import _local_explanation
+
+    result = _local_explanation(
+        "SUSPICIOUS",
+        "ar",
+        input_value="https://paypa1-secure-login-verify.com/secure",
+        evidence={"ml": {"classification": "DANGEROUS", "phishing_prob": 0.999}, "virustotal": {}},
+    )
+    joined = " ".join(result.get("reasons", []))
+    assert "%" not in joined
+    assert "99.9" not in joined

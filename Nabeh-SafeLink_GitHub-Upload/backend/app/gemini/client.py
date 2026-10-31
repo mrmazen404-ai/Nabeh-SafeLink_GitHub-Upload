@@ -669,11 +669,10 @@ def _local_explanation(
     # 5. ML Model Feature Probability Signal
     ml_prob = ml_evidence.get("phishing_prob")
     if ml_prob is not None and float(ml_prob) >= 0.40:
-        prob_pct = round(float(ml_prob) * 100, 1)
         if is_ar:
-            reasons.append(f"تحليل نموذج التعلم الآلي (ML): أكد المحرك وجود أنماط خطورة عالية بنسبة احتمالية احتيال ({prob_pct}%).")
+            reasons.append("تحليل نموذج التعلم الآلي (ML): رصد النموذج أنماطاً هيكلية تستدعي الحذر؛ لا نعرض نسبة غير معايرة.")
         else:
-            reasons.append(f"Machine Learning Analysis: Detected high-risk structural features with phishing probability ({prob_pct}%).")
+            reasons.append("Machine Learning Analysis: The model detected structural patterns requiring caution; no uncalibrated percentage is shown.")
 
     # 6. VirusTotal Multi-Engine Evidence
     vt_malicious = int(vt_evidence.get("malicious", 0) or 0)
