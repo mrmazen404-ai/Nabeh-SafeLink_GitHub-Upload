@@ -1,20 +1,31 @@
-.vercel/
-.env*
+# Secrets and local environment
+.env
+.env.*
 !.env.example
 
-# Python
+# Python artifacts
 __pycache__/
 *.py[cod]
 .pytest_cache/
 .venv/
 venv/
 
-# Frontend
-Nabeh-SafeLink_GitHub-Upload/frontend/node_modules/
+# Frontend dependencies
+frontend/node_modules/
+admin_frontend/node_modules/
 
-# Local ML artifacts are packaged into backend_bundle.zip, not committed separately
-Nabeh-SafeLink_GitHub-Upload/backend/app/ml/*.joblib
-Nabeh-SafeLink_GitHub-Upload/backend/app/ml/*_report.json
+# Generated frontend deployment artifacts; Vercel rebuilds these on every deploy.
+frontend/dist/
+public/
 
-# Logs and local outputs
+# Generated deployment bundle; regenerate it during release packaging
+backend_bundle.zip
+
+# Logs and local reports
 *.log
+
+# IDE settings
+.idea/
+.vscode/
+
+# Keep the production model explicitly tracked; do not add blanket *.joblib rules.
