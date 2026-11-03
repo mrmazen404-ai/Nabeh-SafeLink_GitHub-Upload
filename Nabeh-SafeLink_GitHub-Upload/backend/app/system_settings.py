@@ -106,7 +106,8 @@ def _load_values_from_database() -> dict[str, Any]:
             if key in values and _valid_value(key, value):
                 values[key] = value
     except Exception as exc:
-        logger.warning("system_settings_read_fallback error=%s", type(exc).__name__)
+        logger.warning("system_settings_read_failed error=%s", type(exc).__name__)
+        raise SystemSettingsUnavailable("Central system settings could not be read") from exc
     return values
 
 
@@ -132,20 +133,29 @@ def invalidate_settings_cache() -> None:
 
 
 def get_runtime_config() -> dict[str, Any]:
-    """Return only public settings; on DB failure expose safe, fail-closed UI values."""
+    """Return public settings and distinguish storage failure from admin maintenance."""
+    service_available = True
     try:
         settings = get_system_settings()
     except SystemSettingsUnavailable:
         settings = dict(SETTING_DEFAULTS)
         settings.update({
-            "system.maintenance_mode": True,
+            # Maintenance is an explicit admin decision, never an outage fallback.
+            "system.maintenance_mode": False,
             "features.registration_enabled": False,
             "features.guest_scans_enabled": False,
             "features.public_metrics_enabled": False,
             "features.ai_explanations_enabled": False,
             "legal.require_latest_terms": True,
         })
-    return {field: settings[key] for field, key in _RUNTIME_FIELD_MAP.items() if key in PUBLIC_RUNTIME_KEYS}
+        service_available = False
+    runtime_config = {
+        field: settings[key]
+        for field, key in _RUNTIME_FIELD_MAP.items()
+        if key in PUBLIC_RUNTIME_KEYS
+    }
+    runtime_config["service_available"] = service_available
+    return runtime_config
 
 
 def setting_enabled(key: str) -> bool:

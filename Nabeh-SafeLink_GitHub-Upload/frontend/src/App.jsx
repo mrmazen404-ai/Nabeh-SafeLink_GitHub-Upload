@@ -16,6 +16,7 @@ import { RuntimeConfigProvider, useRuntimeConfig } from './context/RuntimeConfig
 import { useLanguage } from './context/LanguageContext';
 import TermsConsentGate from './components/TermsConsentGate';
 import MaintenancePage from './components/MaintenancePage';
+import ServiceUnavailablePage from './components/ServiceUnavailablePage';
 import { frontendLog } from './services/observability';
 
 import Splash from './pages/auth/Splash';
@@ -344,6 +345,9 @@ function RuntimeApplication() {
   const [initialScanUrl, setInitialScanUrl] = useState('');
 
   if (loading) return <main className="runtime-config-loading" role="status">{config.default_language === 'ar' ? 'جارٍ تحميل إعدادات النظام...' : 'Loading system settings…'}</main>;
+  if (config.service_available === false) {
+    return <ThemeProvider><LanguageProvider><ServiceUnavailablePage onCheckAgain={refresh} /></LanguageProvider></ThemeProvider>;
+  }
   if (config.maintenance_mode) {
     return <ThemeProvider><LanguageProvider><MaintenancePage onCheckAgain={refresh} /></LanguageProvider></ThemeProvider>;
   }

@@ -32,21 +32,66 @@ def test_runtime_config_is_explicit_public_allowlist(monkeypatch):
     assert set(result) == {
         "default_theme", "default_language", "allow_theme_override", "allow_language_override",
         "maintenance_mode", "registration_enabled", "guest_scanning_enabled", "public_metrics_enabled",
-        "ai_explanations_enabled", "require_latest_terms",
+        "ai_explanations_enabled", "require_latest_terms", "service_available",
     }
+    assert result["service_available"] is True
     assert "must-never-be-returned" not in repr(result)
 
 
-def test_runtime_config_fails_closed_if_settings_storage_is_unavailable(monkeypatch):
+def test_runtime_config_uses_admin_maintenance_flag_when_settings_are_available(monkeypatch):
+    for maintenance_mode in (False, True):
+        monkeypatch.setattr(system_settings, "get_system_settings", lambda **_: {
+            **system_settings.SETTING_DEFAULTS,
+            "system.maintenance_mode": maintenance_mode,
+        })
+        config = system_settings.get_runtime_config()
+        assert config["maintenance_mode"] is maintenance_mode
+        assert config["service_available"] is True
+
+
+def test_database_read_failure_is_reported_as_unavailable(monkeypatch):
+    class BrokenSupabase:
+        def table(self, _name):
+            raise OSError("offline")
+
+    monkeypatch.setattr(system_settings, "supabase", BrokenSupabase())
+    with pytest.raises(system_settings.SystemSettingsUnavailable):
+        system_settings._load_values_from_database()
+
+
+def test_runtime_config_reports_outage_without_enabling_maintenance(monkeypatch):
     def unavailable(**_):
         raise system_settings.SystemSettingsUnavailable("offline")
 
     monkeypatch.setattr(system_settings, "get_system_settings", unavailable)
     config = system_settings.get_runtime_config()
-    assert config["maintenance_mode"] is True
+    assert config["maintenance_mode"] is False
+    assert config["service_available"] is False
     assert config["registration_enabled"] is False
     assert config["guest_scanning_enabled"] is False
     assert config["ai_explanations_enabled"] is False
+
+
+def test_runtime_endpoint_separates_outage_from_maintenance_and_blocks_api(monkeypatch):
+    from fastapi.testclient import TestClient
+
+    import app.main as main_module
+
+    def unavailable(**_):
+        raise system_settings.SystemSettingsUnavailable("offline")
+
+    monkeypatch.setattr(system_settings, "get_system_settings", unavailable)
+    with TestClient(main_module.app) as client:
+        runtime_response = client.get("/api/v1/public/runtime-config")
+        assert runtime_response.status_code == 200
+        runtime = runtime_response.json()["data"]
+        assert runtime["service_available"] is False
+        assert runtime["maintenance_mode"] is False
+
+        monkeypatch.setattr(main_module, "get_system_settings", unavailable)
+        api_response = client.get("/api/v1/not-a-real-route")
+        assert api_response.status_code == 503
+        assert "الصيانة" not in api_response.json()["detail"]
 
 
 def test_ai_disabled_keeps_url_scan_local_and_does_not_call_gemini(monkeypatch):

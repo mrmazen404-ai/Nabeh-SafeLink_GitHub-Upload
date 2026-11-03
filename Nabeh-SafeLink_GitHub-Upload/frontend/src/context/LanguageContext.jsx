@@ -180,6 +180,12 @@ export const translations = {
       checkingStatus: 'جاري التحقق من حالة الخدمة...',
       helpBtn: 'دليل الاستخدام والأسئلة',
     },
+    serviceUnavailable: {
+      title: 'الخدمة غير متاحة مؤقتًا',
+      desc: 'تعذر الاتصال بإعدادات النظام بسبب مشكلة تقنية. لم يتم تفعيل وضع الصيانة.',
+      retryBtn: 'إعادة المحاولة',
+      checking: 'جارٍ التحقق من الخدمة...',
+    },
 
     // Process Confirmation (#50)
     confirmation: {
@@ -721,6 +727,12 @@ export const translations = {
       checkAgainBtn: 'Check Status Again',
       checkingStatus: 'Checking service status...',
       helpBtn: 'User Guide & FAQ',
+    },
+    serviceUnavailable: {
+      title: 'Service temporarily unavailable',
+      desc: 'System settings could not be reached because of a technical issue. Maintenance mode has not been enabled.',
+      retryBtn: 'Try again',
+      checking: 'Checking service...',
     },
 
     // Process Confirmation (#50)

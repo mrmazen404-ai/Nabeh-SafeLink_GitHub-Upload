@@ -14,11 +14,13 @@ export const DEFAULT_RUNTIME_CONFIG = Object.freeze({
   public_metrics_enabled: true,
   ai_explanations_enabled: true,
   require_latest_terms: false,
+  service_available: true,
 });
 
 const SAFE_RUNTIME_CONFIG = Object.freeze({
   ...DEFAULT_RUNTIME_CONFIG,
   maintenance_mode: false,
+  service_available: false,
   registration_enabled: false,
   guest_scanning_enabled: false,
   public_metrics_enabled: false,
