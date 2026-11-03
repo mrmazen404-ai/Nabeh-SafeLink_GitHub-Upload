@@ -18,7 +18,7 @@ export const DEFAULT_RUNTIME_CONFIG = Object.freeze({
 
 const SAFE_RUNTIME_CONFIG = Object.freeze({
   ...DEFAULT_RUNTIME_CONFIG,
-  maintenance_mode: true,
+  maintenance_mode: false,
   registration_enabled: false,
   guest_scanning_enabled: false,
   public_metrics_enabled: false,
@@ -39,7 +39,7 @@ export function RuntimeConfigProvider({ children }) {
       setConfig({ ...DEFAULT_RUNTIME_CONFIG, ...response.data.data });
       setLastError(false);
     } catch {
-      // Fail closed: do not mount authenticated/product routes without server policy.
+      // Keep optional and sensitive features disabled without server policy, but do not force maintenance mode.
       setConfig({ ...SAFE_RUNTIME_CONFIG });
       setLastError(true);
     } finally {
