@@ -1,31 +1,47 @@
 """
-Async VirusTotal API Client for Nabeh SafeLink
-Uses httpx.AsyncClient to prevent blocking the FastAPI event loop.
+Async VirusTotal API client with explicit provider states.
+No provider result is synthesized: unavailable evidence is UNKNOWN.
 """
-
-import os
-import base64
 import asyncio
+import base64
 import logging
+import os
 import time
+from datetime import datetime, timezone
+from typing import Any, Dict
+
 import httpx
-from typing import Dict, Any
 
 from app.observability import elapsed_ms, log_event, resource_id, safe_error
-
 
 VIRUSTOTAL_API_KEY = os.getenv("VIRUSTOTAL_API_KEY", "")
 VIRUSTOTAL_BASE_URL = "https://www.virustotal.com/api/v3"
 logger = logging.getLogger(__name__)
 
 
+def _evidence(status: str, *, error: str | None = None, provider_status: str | None = None) -> Dict[str, Any]:
+    result: Dict[str, Any] = {
+        "status": status,
+        "provider": "VIRUSTOTAL",
+        "provider_status": provider_status or ("SUCCESS" if status in {"SAFE", "SUSPICIOUS", "DANGEROUS"} else "UNKNOWN"),
+        "evidence_timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+    if error:
+        result["error"] = error
+    return result
+
+
+def _unknown(error: str, provider_status: str) -> Dict[str, Any]:
+    result = _evidence("UNKNOWN", error=error, provider_status=provider_status)
+    result["confidence"] = 0.0
+    return result
+
+
 def _get_api_key() -> str:
-    """Read the current secret so rotations take effect without stale import state."""
     return os.getenv("VIRUSTOTAL_API_KEY", VIRUSTOTAL_API_KEY).strip()
 
 
 def get_provider_readiness() -> Dict[str, Any]:
-    """Return non-sensitive VirusTotal configuration state for health checks."""
     return {
         "status": "configured" if _get_api_key() else "not_configured",
         "base_url": VIRUSTOTAL_BASE_URL,
@@ -33,201 +49,126 @@ def get_provider_readiness() -> Dict[str, Any]:
 
 
 def _get_headers() -> Dict[str, str]:
-    return {
-        "x-apikey": _get_api_key(),
-        "Accept": "application/json",
-    }
+    return {"x-apikey": _get_api_key(), "Accept": "application/json"}
 
 
 def _url_id(url: str) -> str:
-    url_bytes = url.encode("utf-8")
-    url_base64 = base64.urlsafe_b64encode(url_bytes).decode("utf-8")
-    return url_base64.rstrip("=")
+    return base64.urlsafe_b64encode(url.encode("utf-8")).decode("utf-8").rstrip("=")
 
 
 async def check_url_virustotal(url: str) -> Dict[str, Any]:
-    """Check a URL against VirusTotal asynchronously using httpx."""
     started = time.perf_counter()
     target_id = resource_id(url)
     log_event(logger, logging.INFO, "virustotal_check_started", target_id=target_id)
     if not _get_api_key():
         log_event(logger, logging.WARNING, "virustotal_not_configured", target_id=target_id)
-        return {
-            "status": "UNKNOWN",
-            "confidence": 0.0,
-            "error": "VIRUSTOTAL_API_KEY not set",
-        }
+        return _unknown("VIRUSTOTAL_NOT_CONFIGURED", "NOT_CONFIGURED")
 
-    url_id = _url_id(url)
-    endpoint = f"{VIRUSTOTAL_BASE_URL}/urls/{url_id}"
-
+    endpoint = f"{VIRUSTOTAL_BASE_URL}/urls/{_url_id(url)}"
     async with httpx.AsyncClient(timeout=15.0) as client:
         try:
             response = await client.get(endpoint, headers=_get_headers())
-            log_event(logger, logging.DEBUG, "virustotal_lookup_response", target_id=target_id, status=response.status_code)
-
-            if response.status_code == 404:
+            status_code = response.status_code
+            log_event(logger, logging.DEBUG, "virustotal_lookup_response", target_id=target_id, status=status_code)
+            if status_code == 404:
                 log_event(logger, logging.INFO, "scan_virustotal_lookup_not_found", target_id=target_id, provider="VIRUSTOTAL", status=404, duration_ms=elapsed_ms(started))
                 return await _submit_url(url, client)
-
-            if response.status_code == 401:
-                log_event(logger, logging.WARNING, "scan_virustotal_failed", target_id=target_id, provider="VIRUSTOTAL", status=401, error_code="VIRUSTOTAL_PROVIDER_ERROR", duration_ms=elapsed_ms(started))
-                return {
-                    "status": "UNKNOWN",
-                    "confidence": 0.0,
-                    "error": "VIRUSTOTAL_PROVIDER_ERROR",
-                }
-
-            if response.status_code == 429:
-                log_event(logger, logging.WARNING, "scan_virustotal_rate_limited", target_id=target_id, provider="VIRUSTOTAL", status=429, error_code="RATE_LIMITED", duration_ms=elapsed_ms(started))
-                return {
-                    "status": "UNKNOWN",
-                    "confidence": 0.0,
-                    "error": "VIRUSTOTAL_RATE_LIMITED",
-                }
-
-            if response.status_code != 200:
-                log_event(logger, logging.WARNING, "scan_virustotal_failed", target_id=target_id, provider="VIRUSTOTAL", status=response.status_code, error_code="VIRUSTOTAL_PROVIDER_ERROR", duration_ms=elapsed_ms(started))
-                return {
-                    "status": "UNKNOWN",
-                    "confidence": 0.0,
-                    "error": "VIRUSTOTAL_PROVIDER_ERROR",
-                }
-
-            data = response.json()
-            result = _parse_response(data)
+            if status_code == 401:
+                return _unknown("VIRUSTOTAL_AUTH_ERROR", "AUTH_ERROR")
+            if status_code == 403:
+                return _unknown("VIRUSTOTAL_ACCESS_DENIED", "ACCESS_DENIED")
+            if status_code == 429:
+                result = _unknown("VIRUSTOTAL_RATE_LIMITED", "RATE_LIMITED")
+                result["retry_after"] = response.headers.get("retry-after")
+                return result
+            if 500 <= status_code < 600:
+                return _unknown("VIRUSTOTAL_PROVIDER_ERROR", "PROVIDER_ERROR")
+            if status_code != 200:
+                return _unknown("VIRUSTOTAL_PROVIDER_ERROR", "PROVIDER_ERROR")
+            result = _parse_response(response.json())
             log_event(logger, logging.INFO, "virustotal_check_succeeded", target_id=target_id, status=result.get("status"), duration_ms=elapsed_ms(started))
             return result
-
         except httpx.TimeoutException:
             log_event(logger, logging.ERROR, "virustotal_timeout", target_id=target_id, duration_ms=elapsed_ms(started))
-            return {"status": "UNKNOWN", "confidence": 0.0, "error": "Timeout"}
-        except httpx.RequestError as e:
-            log_event(logger, logging.ERROR, "virustotal_connection_failed", target_id=target_id, error_type=safe_error(e), duration_ms=elapsed_ms(started))
-            return {"status": "UNKNOWN", "confidence": 0.0, "error": "VIRUSTOTAL_NETWORK_ERROR"}
-        except Exception as e:
-            log_event(logger, logging.ERROR, "virustotal_check_failed", target_id=target_id, error_type=safe_error(e), duration_ms=elapsed_ms(started))
-            return {"status": "UNKNOWN", "confidence": 0.0, "error": "VIRUSTOTAL_PROVIDER_ERROR"}
+            return _unknown("VIRUSTOTAL_TIMEOUT", "TIMEOUT")
+        except httpx.RequestError as error:
+            log_event(logger, logging.ERROR, "virustotal_connection_failed", target_id=target_id, error_type=safe_error(error), duration_ms=elapsed_ms(started))
+            return _unknown("VIRUSTOTAL_NETWORK_ERROR", "NETWORK_ERROR")
+        except Exception as error:
+            log_event(logger, logging.ERROR, "virustotal_check_failed", target_id=target_id, error_type=safe_error(error), duration_ms=elapsed_ms(started))
+            return _unknown("VIRUSTOTAL_PROVIDER_ERROR", "PROVIDER_ERROR")
 
 
 async def _submit_url(url: str, client: httpx.AsyncClient) -> Dict[str, Any]:
-    """Submit a new URL to VirusTotal asynchronously."""
     target_id = resource_id(url)
-    log_event(logger, logging.INFO, "virustotal_submit_started", target_id=target_id)
     endpoint = f"{VIRUSTOTAL_BASE_URL}/urls"
-
     try:
-        response = await client.post(
-            endpoint,
-            headers=_get_headers(),
-            data={"url": url},
-        )
-
+        response = await client.post(endpoint, headers=_get_headers(), data={"url": url})
+        if response.status_code == 401:
+            return _unknown("VIRUSTOTAL_AUTH_ERROR", "AUTH_ERROR")
+        if response.status_code == 429:
+            result = _unknown("VIRUSTOTAL_RATE_LIMITED", "RATE_LIMITED")
+            result["retry_after"] = response.headers.get("retry-after")
+            return result
         if response.status_code not in (200, 201):
-            log_event(logger, logging.ERROR, "virustotal_submit_failed", target_id=target_id, status=response.status_code)
-            return {
-                "status": "UNKNOWN",
-                "confidence": 0.0,
-                "error": "VIRUSTOTAL_PROVIDER_ERROR",
-            }
+            return _unknown("VIRUSTOTAL_PROVIDER_ERROR", "PROVIDER_ERROR")
 
-        url_id = _url_id(url)
-        get_endpoint = f"{VIRUSTOTAL_BASE_URL}/urls/{url_id}"
-
-        # Resilient short-polling loop: poll up to 3 attempts every 1.5 seconds (max 4.5 seconds)
+        get_endpoint = f"{VIRUSTOTAL_BASE_URL}/urls/{_url_id(url)}"
         for attempt in range(3):
             await asyncio.sleep(1.5)
             get_response = await client.get(get_endpoint, headers=_get_headers())
+            if get_response.status_code == 429:
+                result = _unknown("VIRUSTOTAL_RATE_LIMITED", "RATE_LIMITED")
+                result["retry_after"] = get_response.headers.get("retry-after")
+                return result
             if get_response.status_code == 200:
                 result = _parse_response(get_response.json())
                 if result.get("status") != "UNKNOWN":
                     log_event(logger, logging.INFO, "virustotal_submit_succeeded", target_id=target_id, status=result.get("status"), attempt=attempt + 1)
                     return result
-
         log_event(logger, logging.WARNING, "virustotal_analysis_pending", target_id=target_id)
-        return {
-            "status": "UNKNOWN",
-            "confidence": 0.0,
-            "error": "Pending analysis after submit",
-        }
-
-    except Exception as e:
-        log_event(logger, logging.ERROR, "virustotal_submit_connection_failed", target_id=target_id, error_type=safe_error(e))
-        return {"status": "UNKNOWN", "confidence": 0.0, "error": "VIRUSTOTAL_NETWORK_ERROR"}
+        return _unknown("VIRUSTOTAL_ANALYSIS_PENDING", "ANALYSIS_PENDING")
+    except httpx.TimeoutException:
+        return _unknown("VIRUSTOTAL_TIMEOUT", "TIMEOUT")
+    except httpx.RequestError as error:
+        log_event(logger, logging.ERROR, "virustotal_submit_connection_failed", target_id=target_id, error_type=safe_error(error))
+        return _unknown("VIRUSTOTAL_NETWORK_ERROR", "NETWORK_ERROR")
+    except Exception as error:
+        log_event(logger, logging.ERROR, "virustotal_submit_failed", target_id=target_id, error_type=safe_error(error))
+        return _unknown("VIRUSTOTAL_PROVIDER_ERROR", "PROVIDER_ERROR")
 
 
 def _parse_response(data: Dict[str, Any]) -> Dict[str, Any]:
-    """Parse VirusTotal response with sanitized output."""
     try:
         attributes = data.get("data", {}).get("attributes", {})
         stats = attributes.get("last_analysis_stats", {})
-
-        malicious = stats.get("malicious", 0)
-        suspicious = stats.get("suspicious", 0)
-        harmless = stats.get("harmless", 0)
-        undetected = stats.get("undetected", 0)
-        additional_statuses = {
-            key: value for key, value in stats.items()
-            if key not in {"malicious", "suspicious", "harmless", "undetected"}
-        }
-        total = malicious + suspicious + harmless + undetected + sum(additional_statuses.values())
-
-        reputation = attributes.get("reputation", 0)
-        categories = attributes.get("categories", {})
-
+        malicious = int(stats.get("malicious", 0) or 0)
+        suspicious = int(stats.get("suspicious", 0) or 0)
+        harmless = int(stats.get("harmless", 0) or 0)
+        undetected = int(stats.get("undetected", 0) or 0)
+        additional = {key: value for key, value in stats.items() if key not in {"malicious", "suspicious", "harmless", "undetected"}}
+        total = malicious + suspicious + harmless + undetected + sum(int(value or 0) for value in additional.values())
         if malicious >= 3:
-            status = "DANGEROUS"
-            confidence = min(1.0, malicious / 10.0)
+            status, confidence = "DANGEROUS", min(1.0, malicious / 10.0)
         elif malicious >= 1 or suspicious >= 1:
-            status = "SUSPICIOUS"
-            confidence = 0.6
+            status, confidence = "SUSPICIOUS", 0.6
         elif harmless > 0 and malicious == 0:
-            status = "SAFE"
-            confidence = min(1.0, harmless / max(1, total))
+            status, confidence = "SAFE", min(1.0, harmless / max(1, total))
         else:
-            status = "UNKNOWN"
-            confidence = 0.3
-
-        return {
-            "status": status,
+            status, confidence = "UNKNOWN", 0.3
+        result = _evidence(status, provider_status="SUCCESS" if status != "UNKNOWN" else "NO_VERDICT")
+        result.update({
             "confidence": round(confidence, 4),
             "malicious": malicious,
             "suspicious": suspicious,
             "harmless": harmless,
             "undetected": undetected,
             "total_engines": total,
-            "unclassified_engines": sum(additional_statuses.values()),
-            "additional_engine_statuses": additional_statuses,
-            "reputation": reputation,
-            "categories": categories,
-        }
-
-    except Exception as e:
-        return {
-            "status": "UNKNOWN",
-            "confidence": 0.0,
-            "error": f"Parse error: {e}",
-        }
-
-
-if __name__ == "__main__":
-    from dotenv import load_dotenv
-    load_dotenv()
-
-    VIRUSTOTAL_API_KEY = os.getenv("VIRUSTOTAL_API_KEY", "")
-
-    test_urls = [
-        "https://www.google.com",
-        "https://www.youtube.com",
-        "http://paypa1-login-verify.com/secure",
-    ]
-
-    async def main():
-        print("=" * 70)
-        print("Testing Async VirusTotal API")
-        print("=" * 70)
-        for u in test_urls:
-            res = await check_url_virustotal(u)
-            print(f"{u:<45} → {res.get('status')} (malicious={res.get('malicious', 0)})")
-
-    asyncio.run(main())
+            "unclassified_engines": sum(int(value or 0) for value in additional.values()),
+            "additional_engine_statuses": additional,
+            "reputation": attributes.get("reputation", 0),
+            "categories": attributes.get("categories", {}),
+        })
+        return result
+    except Exception:
+        return _unknown("VIRUSTOTAL_PARSE_ERROR", "PARSE_ERROR")

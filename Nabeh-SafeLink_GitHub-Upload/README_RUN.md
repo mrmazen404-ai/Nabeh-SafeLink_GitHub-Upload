@@ -144,3 +144,33 @@ cd frontend && npm run build
 ```
 
 > ℹ️ **ملاحظة:** تتطلب اختبارات التكامل الحية والتواصل مع Supabase بيئة تجريبية (Staging) ومفاتيح بيئة مكتملة في ملف `.env`.
+
+## ✅ 8. التحقق الإنتاجي وعدم تزوير النتائج
+
+التفاصيل الموثقة للإصلاحات ونتائج الاختبارات موجودة في:
+
+```text
+PRODUCTION_VERIFICATION_AR.md
+```
+
+آخر تحقق محلي ناجح:
+
+```text
+196 passed
+frontend build: passed
+admin frontend build: passed
+npm audit: 0 vulnerabilities
+```
+
+لا تعني `configured` أن Gemini أو VirusTotal نجحا في آخر طلب؛ هي تعني فقط أن السر موجود. يجب أن يظهر نجاح Gemini في `last_call.status=ready` بعد طلب حقيقي. عند 429 أو timeout تظهر حالة `degraded` ويستخدم النظام fallback محليًا معلّمًا صراحةً، ولا تتحول النتيجة إلى `SAFE` بسبب فشل مزود خارجي.
+
+لتشغيل اختبارات التكامل الحية، استخدم مفاتيح staging الحقيقية فقط، ولا تضعها في Git أو في ملفات التوثيق:
+
+```bash
+NABEH_ENVIRONMENT=staging \
+NABEH_TRUST_MODEL_ARTIFACT=1 \
+GEMINI_API_KEY="$GEMINI_API_KEY" \
+GEMINI_MODEL="$GEMINI_MODEL" \
+VIRUSTOTAL_API_KEY="$VIRUSTOTAL_API_KEY" \
+uv run uvicorn main:app --host 127.0.0.1 --port 8000
+```
