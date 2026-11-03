@@ -5,6 +5,7 @@ import Footer from '../components/Footer';
 import { getScanDetails } from '../services/api';
 import { useLanguage } from '../context/LanguageContext';
 import { AlertTriangleIcon, CheckCircleIcon, ShieldCheckIcon } from '../components/Icons';
+import UrlEvidenceCard from '../components/UrlEvidenceCard';
 import './advanced-pages.css';
 
 const UNCALIBRATED_SCORE_FIELDS = new Set([
@@ -47,7 +48,10 @@ export default function ScanDetails({ activeTab, setActiveTab, onNavigateAuth })
   const scan = data?.scan;
   const explanation = data?.explanation;
   const stages = scan?.analysis_snapshot && Object.keys(scan.analysis_snapshot).length ? scan.analysis_snapshot : {};
-  const stageList = Object.entries(stages).map(([key, value]) => [key, redactUncalibratedScores(value)]);
+  const evidenceCard = stages.evidence_card;
+  const stageList = Object.entries(stages)
+    .filter(([key]) => key !== 'evidence_card')
+    .map(([key, value]) => [key, redactUncalibratedScores(value)]);
 
   const getLabel = (cls) => cls === 'SAFE'
     ? (lang === 'ar' ? 'لم تُرصد مؤشرات' : 'No indicators detected')
@@ -125,6 +129,8 @@ export default function ScanDetails({ activeTab, setActiveTab, onNavigateAuth })
                 </div>
               )}
             </section>
+
+            <UrlEvidenceCard card={evidenceCard} lang={lang} t={t} />
 
             <section className="advanced-grid">
               <article className="advanced-card">

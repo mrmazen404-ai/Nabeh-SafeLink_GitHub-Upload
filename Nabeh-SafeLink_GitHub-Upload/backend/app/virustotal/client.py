@@ -8,6 +8,7 @@ import base64
 import asyncio
 import logging
 import time
+from datetime import datetime, timezone
 import httpx
 from typing import Dict, Any
 
@@ -55,6 +56,7 @@ async def check_url_virustotal(url: str) -> Dict[str, Any]:
         return {
             "status": "UNKNOWN",
             "confidence": 0.0,
+            "provider_status": "NOT_CONFIGURED",
             "error": "VIRUSTOTAL_API_KEY not set",
         }
 
@@ -75,6 +77,7 @@ async def check_url_virustotal(url: str) -> Dict[str, Any]:
                 return {
                     "status": "UNKNOWN",
                     "confidence": 0.0,
+                    "provider_status": "AUTH_ERROR",
                     "error": "VIRUSTOTAL_PROVIDER_ERROR",
                 }
 
@@ -83,6 +86,7 @@ async def check_url_virustotal(url: str) -> Dict[str, Any]:
                 return {
                     "status": "UNKNOWN",
                     "confidence": 0.0,
+                    "provider_status": "RATE_LIMITED",
                     "error": "VIRUSTOTAL_RATE_LIMITED",
                 }
 
@@ -91,6 +95,7 @@ async def check_url_virustotal(url: str) -> Dict[str, Any]:
                 return {
                     "status": "UNKNOWN",
                     "confidence": 0.0,
+                    "provider_status": "PROVIDER_ERROR",
                     "error": "VIRUSTOTAL_PROVIDER_ERROR",
                 }
 
@@ -101,13 +106,13 @@ async def check_url_virustotal(url: str) -> Dict[str, Any]:
 
         except httpx.TimeoutException:
             log_event(logger, logging.ERROR, "virustotal_timeout", target_id=target_id, duration_ms=elapsed_ms(started))
-            return {"status": "UNKNOWN", "confidence": 0.0, "error": "Timeout"}
+            return {"status": "UNKNOWN", "confidence": 0.0, "provider_status": "TIMEOUT", "error": "Timeout"}
         except httpx.RequestError as e:
             log_event(logger, logging.ERROR, "virustotal_connection_failed", target_id=target_id, error_type=safe_error(e), duration_ms=elapsed_ms(started))
-            return {"status": "UNKNOWN", "confidence": 0.0, "error": "VIRUSTOTAL_NETWORK_ERROR"}
+            return {"status": "UNKNOWN", "confidence": 0.0, "provider_status": "NETWORK_ERROR", "error": "VIRUSTOTAL_NETWORK_ERROR"}
         except Exception as e:
             log_event(logger, logging.ERROR, "virustotal_check_failed", target_id=target_id, error_type=safe_error(e), duration_ms=elapsed_ms(started))
-            return {"status": "UNKNOWN", "confidence": 0.0, "error": "VIRUSTOTAL_PROVIDER_ERROR"}
+            return {"status": "UNKNOWN", "confidence": 0.0, "provider_status": "PROVIDER_ERROR", "error": "VIRUSTOTAL_PROVIDER_ERROR"}
 
 
 async def _submit_url(url: str, client: httpx.AsyncClient) -> Dict[str, Any]:
@@ -123,11 +128,18 @@ async def _submit_url(url: str, client: httpx.AsyncClient) -> Dict[str, Any]:
             data={"url": url},
         )
 
+        if response.status_code in (401, 403):
+            log_event(logger, logging.ERROR, "virustotal_submit_auth_failed", target_id=target_id, status=response.status_code)
+            return {"status": "UNKNOWN", "confidence": 0.0, "provider_status": "AUTH_ERROR", "error": "VIRUSTOTAL_PROVIDER_ERROR"}
+        if response.status_code == 429:
+            log_event(logger, logging.WARNING, "virustotal_submit_rate_limited", target_id=target_id, status=429)
+            return {"status": "UNKNOWN", "confidence": 0.0, "provider_status": "RATE_LIMITED", "error": "VIRUSTOTAL_RATE_LIMITED"}
         if response.status_code not in (200, 201):
             log_event(logger, logging.ERROR, "virustotal_submit_failed", target_id=target_id, status=response.status_code)
             return {
                 "status": "UNKNOWN",
                 "confidence": 0.0,
+                "provider_status": "PROVIDER_ERROR",
                 "error": "VIRUSTOTAL_PROVIDER_ERROR",
             }
 
@@ -143,17 +155,24 @@ async def _submit_url(url: str, client: httpx.AsyncClient) -> Dict[str, Any]:
                 if result.get("status") != "UNKNOWN":
                     log_event(logger, logging.INFO, "virustotal_submit_succeeded", target_id=target_id, status=result.get("status"), attempt=attempt + 1)
                     return result
+            elif get_response.status_code in (401, 403):
+                return {"status": "UNKNOWN", "confidence": 0.0, "provider_status": "AUTH_ERROR", "error": "VIRUSTOTAL_PROVIDER_ERROR"}
+            elif get_response.status_code == 429:
+                return {"status": "UNKNOWN", "confidence": 0.0, "provider_status": "RATE_LIMITED", "error": "VIRUSTOTAL_RATE_LIMITED"}
+            elif get_response.status_code >= 500:
+                return {"status": "UNKNOWN", "confidence": 0.0, "provider_status": "PROVIDER_ERROR", "error": "VIRUSTOTAL_PROVIDER_ERROR"}
 
         log_event(logger, logging.WARNING, "virustotal_analysis_pending", target_id=target_id)
         return {
             "status": "UNKNOWN",
             "confidence": 0.0,
+            "provider_status": "ANALYSIS_PENDING",
             "error": "Pending analysis after submit",
         }
 
     except Exception as e:
         log_event(logger, logging.ERROR, "virustotal_submit_connection_failed", target_id=target_id, error_type=safe_error(e))
-        return {"status": "UNKNOWN", "confidence": 0.0, "error": "VIRUSTOTAL_NETWORK_ERROR"}
+        return {"status": "UNKNOWN", "confidence": 0.0, "provider_status": "NETWORK_ERROR", "error": "VIRUSTOTAL_NETWORK_ERROR"}
 
 
 def _parse_response(data: Dict[str, Any]) -> Dict[str, Any]:
@@ -162,15 +181,38 @@ def _parse_response(data: Dict[str, Any]) -> Dict[str, Any]:
         attributes = data.get("data", {}).get("attributes", {})
         stats = attributes.get("last_analysis_stats", {})
 
-        malicious = stats.get("malicious", 0)
-        suspicious = stats.get("suspicious", 0)
-        harmless = stats.get("harmless", 0)
-        undetected = stats.get("undetected", 0)
+        def safe_count(value):
+            try:
+                return max(0, int(value or 0))
+            except (TypeError, ValueError):
+                return 0
+
+        malicious = safe_count(stats.get("malicious", 0))
+        suspicious = safe_count(stats.get("suspicious", 0))
+        harmless = safe_count(stats.get("harmless", 0))
+        undetected = safe_count(stats.get("undetected", 0))
+        timeout = safe_count(stats.get("timeout", 0))
         additional_statuses = {
-            key: value for key, value in stats.items()
+            key: safe_count(value) for key, value in stats.items()
             if key not in {"malicious", "suspicious", "harmless", "undetected"}
         }
         total = malicious + suspicious + harmless + undetected + sum(additional_statuses.values())
+        raw_results = attributes.get("last_analysis_results", {})
+        scanner_results = []
+        scanner_results_total = len(raw_results) if isinstance(raw_results, dict) else 0
+        if isinstance(raw_results, dict):
+            for engine_name, engine_result in list(raw_results.items())[:100]:
+                if not isinstance(engine_result, dict):
+                    continue
+                category = str(engine_result.get("category", "unknown") or "unknown").lower()
+                if category not in {"harmless", "undetected", "suspicious", "malicious", "timeout"}:
+                    category = "unknown"
+                scanner_results.append({
+                    "engine_name": str(engine_result.get("engine_name") or engine_name)[:100],
+                    "method": str(engine_result.get("method") or "")[:80],
+                    "category": category,
+                    "result": str(engine_result.get("result") or "")[:240],
+                })
 
         reputation = attributes.get("reputation", 0)
         categories = attributes.get("categories", {})
@@ -191,22 +233,35 @@ def _parse_response(data: Dict[str, Any]) -> Dict[str, Any]:
         return {
             "status": status,
             "confidence": round(confidence, 4),
+            "provider_status": "SUCCESS" if status != "UNKNOWN" else "NO_VERDICT",
             "malicious": malicious,
             "suspicious": suspicious,
             "harmless": harmless,
             "undetected": undetected,
+            "timeout": timeout,
             "total_engines": total,
+            "analysis_data_available": bool(
+                scanner_results
+                or any(safe_count(value) > 0 for value in stats.values())
+                or attributes.get("last_analysis_date")
+            ),
             "unclassified_engines": sum(additional_statuses.values()),
             "additional_engine_statuses": additional_statuses,
+            "scanner_results": scanner_results,
+            "scanner_results_total": scanner_results_total,
+            "scanner_results_truncated": scanner_results_total > 100,
+            "last_analysis_date": attributes.get("last_analysis_date"),
+            "evidence_timestamp": datetime.now(timezone.utc).isoformat(),
             "reputation": reputation,
             "categories": categories,
         }
 
-    except Exception as e:
+    except Exception:
         return {
             "status": "UNKNOWN",
             "confidence": 0.0,
-            "error": f"Parse error: {e}",
+            "provider_status": "PARSE_ERROR",
+            "error": "VIRUSTOTAL_PARSE_ERROR",
         }
 
 

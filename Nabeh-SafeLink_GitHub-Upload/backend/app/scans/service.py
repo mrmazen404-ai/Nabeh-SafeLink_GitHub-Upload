@@ -10,7 +10,7 @@ from urllib.parse import urlsplit
 from app.db.supabase_client import supabase
 from app.observability import elapsed_ms, log_event, resource_id, safe_error
 from app.gemini.client import generate_explanation, analyze_sms_message
-from app.ml.predictor import predict_url
+from app.ml.predictor import BRANDS, SUSPICIOUS_EXTENSIONS, SUSPICIOUS_WORDS, extract_features, predict_url
 from app.virustotal.client import check_url_virustotal
 from app.dashboard.realtime import manager
 from app.config import settings
@@ -21,12 +21,143 @@ from app.scans.url_utils import extract_defanged_urls_from_text, extract_web_url
 
 logger = logging.getLogger(__name__)
 MAX_EMBEDDED_URLS = 5
+URL_FUSION_POLICY_VERSION = "1.0.0"
+VT_DANGEROUS_MIN_ENGINES = 3
+VT_ML_CORROBORATION_MAX_ENGINES = 2
+ML_DANGEROUS_CORROBORATION_MIN_PROB = 0.85
+ML_STRONG_SIGNAL_MIN_PROB = 0.60
+VT_MULTIPLE_SUSPICIOUS_MIN = 2
+HYBRID_SUSPICIOUS_THRESHOLD = 0.40
 
 ARABIC_PHISHING_KEYWORDS = (
     "حسابك", "البنك", "تجميد", "تحديث", "كلمة المرور", "بطاقة", "جائزة",
     "مبروك", "الفوز", "رمز", "إيقاف", "الراجحي", "الأهلي", "الإنماء",
     "سداد", "غرامة", "ربح", "تأكيد", "انقر", "اضغط",
 )
+
+
+def _build_url_observations(target_url: str) -> list[dict]:
+    """Return measured URL properties, not model attributions or verdict reasons."""
+    features = extract_features(target_url)
+    parsed = urlsplit(target_url)
+    path_and_query = f"{parsed.path or ''}?{parsed.query or ''}".lower()
+    path = (parsed.path or "").lower()
+    terms = [word for word in SUSPICIOUS_WORDS if word in target_url.lower()]
+    brands = [brand for brand in BRANDS if brand in path_and_query]
+    extension = next((item for item in SUSPICIOUS_EXTENSIONS if path.endswith(item)), None)
+    return [
+        {"code": "URL_SCHEME", "value": (parsed.scheme or "").lower()},
+        {"code": "URL_LENGTH", "value": features["url_length"]},
+        {"code": "SUBDOMAIN_COUNT", "value": features["subdomain_count"]},
+        {"code": "IPV4_HOST", "value": bool(features["has_ip_host"])},
+        {"code": "PUNYCODE_HOST", "value": bool(features["has_punycode"])},
+        {"code": "AT_SYMBOL", "value": bool(features["has_at_symbol"])},
+        {"code": "NONSTANDARD_PORT", "value": bool(features["nonstandard_port"])},
+        {"code": "ENCODED_CHARACTERS", "value": bool(features["has_encoded_chars"])},
+        {"code": "QUERY_PARAMETER_COUNT", "value": features["query_param_count"]},
+        {"code": "SUSPICIOUS_TERMS", "value": terms},
+        {"code": "BRAND_TERMS_IN_PATH_QUERY", "value": brands},
+        {"code": "SUSPICIOUS_FILE_EXTENSION", "value": extension},
+    ]
+
+
+def _build_url_evidence_card(target_url: str, combined: dict, ml_result: dict, vt_result: dict, explanation: dict) -> dict:
+    """Build an auditable, score-free evidence snapshot from actual scan outputs."""
+    ml_result = ml_result or {}
+    vt_result = vt_result or {}
+    combined = combined or {}
+    explanation = explanation or {}
+    try:
+        observations = _build_url_observations(target_url)
+        observation_status = "AVAILABLE"
+    except Exception:
+        observations = []
+        observation_status = "UNAVAILABLE"
+
+    vt_status = str(vt_result.get("status", "UNKNOWN")).upper()
+    count_keys = ("malicious", "suspicious", "harmless", "undetected", "timeout", "total_engines")
+    counts_available = vt_result.get("analysis_data_available")
+    if counts_available is None:
+        counts_available = any(key in vt_result for key in count_keys)
+    if counts_available:
+        vt_counts = {}
+        for key in count_keys:
+            if key not in vt_result:
+                continue
+            try:
+                vt_counts[key] = max(0, int(vt_result[key] or 0))
+            except (TypeError, ValueError):
+                continue
+    else:
+        vt_counts = {}
+    raw_scanner_results = vt_result.get("scanner_results", [])
+    scanner_results = raw_scanner_results[:100] if isinstance(raw_scanner_results, list) else []
+    try:
+        scanner_results_total = max(len(scanner_results), int(vt_result.get("scanner_results_total", len(scanner_results)) or 0))
+    except (TypeError, ValueError):
+        scanner_results_total = len(scanner_results)
+    scanner_results_truncated = bool(vt_result.get("scanner_results_truncated", False)) or scanner_results_total > 100
+    scanner_results_omitted = max(0, scanner_results_total - len(scanner_results))
+
+    return {
+        "schema_version": "1.0",
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "decision": {
+            "classification": str(combined.get("classification", "UNKNOWN")).upper(),
+            "code": combined.get("decision_code", "INSUFFICIENT_EVIDENCE"),
+            "policy_id": "NABEH_URL_FUSION",
+            "policy_version": URL_FUSION_POLICY_VERSION,
+            "inputs": {
+                "virustotal_status": vt_status,
+                "virustotal_provider_status": vt_result.get("provider_status", "NOT_REPORTED_BY_PROVIDER"),
+                "virustotal_counts": vt_counts,
+                "ml_classification": str(ml_result.get("classification", "UNKNOWN")).upper(),
+                "ml_source": ml_result.get("source", "NOT_REPORTED"),
+            },
+            "thresholds": {
+                "dangerous_min_malicious_engines": VT_DANGEROUS_MIN_ENGINES,
+                "dangerous_with_ml_max_malicious_engines": VT_ML_CORROBORATION_MAX_ENGINES,
+                "suspicious_min_vt_suspicious_engines": VT_MULTIPLE_SUSPICIOUS_MIN,
+            },
+        },
+        "sources": {
+            "ml_model": {
+                "status": "COMPLETED" if ml_result.get("source") == "ML_MODEL" else ml_result.get("source", "UNAVAILABLE_OR_NOT_RUN"),
+                "classification": str(ml_result.get("classification", "UNKNOWN")).upper(),
+                "source": ml_result.get("source", "NOT_REPORTED"),
+                "feature_attribution": "NOT_AVAILABLE",
+            },
+            "virustotal": {
+                "status": vt_result.get("provider_status", vt_status),
+                "classification": vt_status,
+                "evidence_timestamp": vt_result.get("evidence_timestamp"),
+                "last_analysis_date": vt_result.get("last_analysis_date"),
+                "analysis_data_available": bool(counts_available),
+                "counts": vt_counts,
+                "scanner_results": scanner_results,
+                "scanner_results_total": scanner_results_total,
+                "scanner_results_truncated": scanner_results_truncated,
+                "scanner_results_omitted": scanner_results_omitted,
+                "error": str(vt_result.get("error"))[:160] if vt_result.get("error") else None,
+            },
+            "explanation": {
+                "provider": explanation.get("provider", "LOCAL_RULES"),
+                "role": "SUPPORTING_EXPLANATION_NOT_DECISION_SOURCE",
+            },
+        },
+        "url_observations": {
+            "status": observation_status,
+            "items": observations,
+            "meaning": "MEASURED_URL_PROPERTIES_NOT_MODEL_ATTRIBUTIONS",
+        },
+        "limitations": [
+            "NO_MODEL_FEATURE_ATTRIBUTION_AVAILABLE",
+            "INTERNAL_MODEL_AND_WEIGHTED_SCORES_NOT_EXPOSED",
+            "SCANNER_COUNTS_ARE_NOT_CALIBRATED_PROBABILITIES",
+            "UNDETECTED_MEANS_NO_OPINION_NOT_HARMLESS",
+            "RESULT_APPLIES_TO_SOURCES_AVAILABLE_AT_SCAN_TIME",
+        ],
+    }
 
 
 class ScanPersistenceError(Exception):
@@ -148,24 +279,26 @@ class ScanService:
         # ═══════════════════════════════════════════════════════════════════
 
         # Rule 1a: VirusTotal strong consensus (3+ engines flag as malicious)
-        if has_vt and vt_malicious >= 3:
+        if has_vt and vt_malicious >= VT_DANGEROUS_MIN_ENGINES:
             # Confidence scales with # of engines
             confidence = min(0.99, 0.85 + (vt_malicious - 3) * 0.02)
             return {
                 "classification": "DANGEROUS",
                 "confidence": round(confidence, 4),
                 "weighted_score": 1.0,
+                "decision_code": "VT_STRONG_CONSENSUS",
                 "source": f"VIRUSTOTAL_CONSENSUS ({vt_malicious} engines)",
             }
 
         # Rule 1b: VirusTotal moderate (1-2) + ML corroboration at high confidence
-        if has_vt and vt_malicious >= 1 and has_ml and ml_class == "DANGEROUS" and ml_prob >= 0.85:
+        if has_vt and 1 <= vt_malicious <= VT_ML_CORROBORATION_MAX_ENGINES and has_ml and ml_class == "DANGEROUS" and ml_prob >= ML_DANGEROUS_CORROBORATION_MIN_PROB:
             # Two independent signals agree
             confidence = min(0.95, 0.75 + (ml_prob - 0.85) * 1.5)
             return {
                 "classification": "DANGEROUS",
                 "confidence": round(confidence, 4),
                 "weighted_score": round(ml_prob, 4),
+                "decision_code": "VT_ML_CORROBORATION",
                 "source": f"DANGEROUS_CORROBORATED (VT:{vt_malicious} + ML:{ml_prob:.2f})",
             }
 
@@ -174,20 +307,22 @@ class ScanService:
         # ═══════════════════════════════════════════════════════════════════
 
         # Rule 2a: VirusTotal has malicious OR multiple suspicious signals
-        if has_vt and (vt_malicious >= 1 or vt_suspicious >= 2):
+        if has_vt and (vt_malicious >= 1 or vt_suspicious >= VT_MULTIPLE_SUSPICIOUS_MIN):
             return {
                 "classification": "SUSPICIOUS",
                 "confidence": 0.65,
                 "weighted_score": float(ml_prob or 0.5),
+                "decision_code": "VT_SIGNAL",
                 "source": f"VIRUSTOTAL_SIGNAL (M:{vt_malicious}, S:{vt_suspicious})",
             }
 
         # Rule 2b: ML strong signal alone → maximum SUSPICIOUS (never DANGEROUS)
-        if has_ml and ml_class == "DANGEROUS" and ml_prob >= 0.60:
+        if has_ml and ml_class == "DANGEROUS" and ml_prob >= ML_STRONG_SIGNAL_MIN_PROB:
             return {
                 "classification": "SUSPICIOUS",
                 "confidence": round(min(0.75, ml_prob * 0.9), 4),
                 "weighted_score": round(ml_prob, 4),
+                "decision_code": "ML_STRONG_SIGNAL_ONLY",
                 "source": "ML_SIGNAL_ONLY",
             }
 
@@ -197,6 +332,7 @@ class ScanService:
                 "classification": "SUSPICIOUS",
                 "confidence": round(float(ml_prob or 0.55) * 0.8, 4),
                 "weighted_score": round(float(ml_prob or 0.5), 4),
+                "decision_code": "ML_SUSPICIOUS_SIGNAL",
                 "source": "ML_SUSPICIOUS_SIGNAL",
             }
 
@@ -214,6 +350,7 @@ class ScanService:
                 "classification": "SAFE",
                 "confidence": round(confidence, 4),
                 "weighted_score": round(ml_prob, 4),
+                "decision_code": "SAFE_SOURCE_CONSENSUS",
                 "source": "HYBRID_CONSENSUS_SAFE",
             }
 
@@ -227,7 +364,7 @@ class ScanService:
             # The weighted fallback is not a calibrated proof threshold. It may
             # only raise caution; DANGEROUS requires the explicit rules above,
             # and SAFE requires positive agreement from a rule above.
-            classification = "SUSPICIOUS" if score >= 0.40 else "UNKNOWN"
+            classification = "SUSPICIOUS" if score >= HYBRID_SUSPICIOUS_THRESHOLD else "UNKNOWN"
 
             # Confidence reflects the score, but never reaches 0.99 from weighted alone
             if classification == "UNKNOWN":
@@ -239,6 +376,7 @@ class ScanService:
                 "classification": classification,
                 "confidence": round(confidence, 4) if confidence is not None else None,
                 "weighted_score": round(score, 4),
+                "decision_code": "HYBRID_WEIGHTED_SUSPICIOUS" if classification == "SUSPICIOUS" else "HYBRID_WEIGHTED_INCONCLUSIVE",
                 "source": "HYBRID_WEIGHTED",
             }
 
@@ -249,6 +387,7 @@ class ScanService:
             "classification": "UNKNOWN",
             "confidence": None,
             "weighted_score": None,
+            "decision_code": "INSUFFICIENT_EVIDENCE",
             "source": "INSUFFICIENT_EVIDENCE",
         }
 
@@ -329,10 +468,10 @@ class ScanService:
                 return res
             except asyncio.TimeoutError:
                 log_event(logger, logging.WARNING, "scan_virustotal_timeout", operation_id=operation_id, provider="VIRUSTOTAL", error_code="SCAN_DEADLINE_EXCEEDED", duration_ms=elapsed_ms(vt_started))
-                return {"status": "UNKNOWN", "error": "SCAN_DEADLINE_EXCEEDED"}
+                return {"status": "UNKNOWN", "provider_status": "TIMEOUT", "error": "SCAN_DEADLINE_EXCEEDED"}
             except Exception as error:
                 log_event(logger, logging.ERROR, "scan_virustotal_failed", operation_id=operation_id, provider="VIRUSTOTAL", error_type=safe_error(error), error_code="VIRUSTOTAL_NETWORK_ERROR", duration_ms=elapsed_ms(vt_started))
-                return {"status": "UNKNOWN", "error": "VIRUSTOTAL_UNAVAILABLE"}
+                return {"status": "UNKNOWN", "provider_status": "NETWORK_ERROR", "error": "VIRUSTOTAL_UNAVAILABLE"}
 
         ml_result, vt_result = await asyncio.gather(run_ml(), run_vt())
 
@@ -374,6 +513,7 @@ class ScanService:
                 explanation["provider"] = "LOCAL_ERROR_FALLBACK"
 
         log_event(logger, logging.INFO, "scan_succeeded", operation_id=operation_id, classification=combined["classification"], provider=explanation.get("provider"), duration_ms=elapsed_ms(started), mode="url")
+        evidence_card = _build_url_evidence_card(target_url, combined, ml_result, vt_result, explanation)
 
         return {
             "scan_kind": "URL_LINK",
@@ -409,6 +549,7 @@ class ScanService:
             },
             "explanation": explanation,
             "virustotal": vt_result,
+            "evidence_card": evidence_card,
             "ml_model": {
                 "classification": ml_result.get("classification", "UNKNOWN"),
                 "confidence": None,
@@ -756,13 +897,18 @@ class ScanService:
             if saved.data:
                 scan_id = saved.data[0].get("id")
                 scan_res["scan_id"] = scan_id
+                if scan_id and scan_res.get("evidence_card"):
+                    scan_res["evidence_card"]["scan_id"] = str(scan_id)
                 log_event(logger, logging.INFO, "scan_persistence_succeeded", operation_id=operation_id, provider="SUPABASE", operation_name="insert_scan", scan_id=scan_id, duration_ms=elapsed_ms(persistence_started))
                 try:
                     await asyncio.to_thread(record_platform_scan_metric, scan_res.get("classification", "UNKNOWN"))
                 except Exception:
                     logger.warning("authenticated_scan_metric_persistence_failed")
                 try:
-                    supabase.table("scans").update({"analysis_snapshot": scan_res.get("stages", {})}).eq("id", scan_id).eq("user_id", user_id).execute()
+                    analysis_snapshot = dict(scan_res.get("stages", {}) or {})
+                    if scan_res.get("evidence_card"):
+                        analysis_snapshot["evidence_card"] = scan_res["evidence_card"]
+                    supabase.table("scans").update({"analysis_snapshot": analysis_snapshot}).eq("id", scan_id).eq("user_id", user_id).execute()
                 except Exception:
                     # Older installations can apply the additive SQL migration later;
                     # the scan itself must not fail merely because the optional snapshot is absent.
