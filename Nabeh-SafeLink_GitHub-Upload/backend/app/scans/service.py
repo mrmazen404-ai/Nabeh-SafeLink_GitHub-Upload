@@ -267,7 +267,14 @@ class ScanService:
             "DANGEROUS": "تجنب فتح الرابط أو إدخال بياناتك." if not english else "Avoid opening the link or entering data.",
             "UNKNOWN": "أعد المحاولة لاحقاً أو تحقق عبر مصدر موثوق." if not english else "Try again later or verify with a trusted source.",
         }.get(classification, "توخ الحذر." if not english else "Exercise caution.")
-        return {"summary": text, "reasons": [], "recommendation": recommendation, "provider": "LOCAL_RULES"}
+        return {
+            "summary": text,
+            "reasons": [],
+            "recommendation": recommendation,
+            "provider": "LOCAL_RULES",
+            "provider_status": "SUCCESS",
+            "classification_source": "LOCAL_RULES",
+        }
 
     @classmethod
     def _local_sms_fallback(cls, text_content: str, extracted_url: str, combined: dict, language: str, provider: str) -> dict:
@@ -317,7 +324,7 @@ class ScanService:
                 return res
             except Exception as error:
                 log_event(logger, logging.ERROR, "scan_ml_failed", operation_id=operation_id, provider="ML_MODEL", error_type=safe_error(error), error_code="MODEL_ERROR", duration_ms=elapsed_ms(ml_started))
-                return {"classification": "UNKNOWN", "confidence": None, "source": "ML_ERROR"}
+                return {"classification": "UNKNOWN", "confidence": None, "source": "ML_ERROR", "provider": "ML_MODEL", "provider_status": "FAILED", "error_code": "MODEL_ERROR"}
 
         async def run_vt():
             vt_started = time.perf_counter()
@@ -329,10 +336,10 @@ class ScanService:
                 return res
             except asyncio.TimeoutError:
                 log_event(logger, logging.WARNING, "scan_virustotal_timeout", operation_id=operation_id, provider="VIRUSTOTAL", error_code="SCAN_DEADLINE_EXCEEDED", duration_ms=elapsed_ms(vt_started))
-                return {"status": "UNKNOWN", "error": "SCAN_DEADLINE_EXCEEDED"}
+                return {"status": "UNKNOWN", "provider": "VIRUSTOTAL", "provider_status": "TIMEOUT", "error": "SCAN_DEADLINE_EXCEEDED"}
             except Exception as error:
                 log_event(logger, logging.ERROR, "scan_virustotal_failed", operation_id=operation_id, provider="VIRUSTOTAL", error_type=safe_error(error), error_code="VIRUSTOTAL_NETWORK_ERROR", duration_ms=elapsed_ms(vt_started))
-                return {"status": "UNKNOWN", "error": "VIRUSTOTAL_UNAVAILABLE"}
+                return {"status": "UNKNOWN", "provider": "VIRUSTOTAL", "provider_status": "NETWORK_ERROR", "error": "VIRUSTOTAL_NETWORK_ERROR"}
 
         ml_result, vt_result = await asyncio.gather(run_ml(), run_vt())
 
@@ -368,10 +375,14 @@ class ScanService:
                 log_event(logger, logging.WARNING, "scan_gemini_timeout", operation_id=operation_id, provider="GEMINI", error_code="GEMINI_TIMEOUT")
                 explanation = cls._local_explanation(combined["classification"], language)
                 explanation["provider"] = "LOCAL_TIMEOUT_FALLBACK"
+                explanation["provider_status"] = "DEGRADED"
+                explanation["classification_source"] = "LOCAL_RULES"
             except Exception as error:
                 log_event(logger, logging.WARNING, "scan_gemini_failed", operation_id=operation_id, provider="GEMINI", error_type=safe_error(error), error_code="GEMINI_PROVIDER_ERROR")
                 explanation = cls._local_explanation(combined["classification"], language)
                 explanation["provider"] = "LOCAL_ERROR_FALLBACK"
+                explanation["provider_status"] = "DEGRADED"
+                explanation["classification_source"] = "LOCAL_RULES"
 
         log_event(logger, logging.INFO, "scan_succeeded", operation_id=operation_id, classification=combined["classification"], provider=explanation.get("provider"), duration_ms=elapsed_ms(started), mode="url")
 

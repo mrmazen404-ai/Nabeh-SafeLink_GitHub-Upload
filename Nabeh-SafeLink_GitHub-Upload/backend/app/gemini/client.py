@@ -19,6 +19,7 @@ from app.scans.text_rules import analyze_message_indicators
 client = None
 _client_api_key = None
 _last_provider_status = {"status": "not_attempted", "provider": None, "error_type": None, "error_code": None}
+_provider_semaphore = asyncio.Semaphore(settings.GEMINI_MAX_CONCURRENCY)
 logger = logging.getLogger(__name__)
 
 
@@ -137,7 +138,8 @@ async def _generate_content_with_rate_limit_retry(client_instance, *, model: str
     retries = settings.GEMINI_RATE_LIMIT_RETRIES
     for attempt in range(retries + 1):
         try:
-            return await client_instance.aio.models.generate_content(model=model, contents=contents, config=config)
+            async with _provider_semaphore:
+                return await client_instance.aio.models.generate_content(model=model, contents=contents, config=config)
         except Exception as error:
             if not _is_rate_limited_error(error) or attempt >= retries:
                 raise
@@ -307,8 +309,9 @@ Respond ONLY in valid JSON matching this exact structure:
 
         except Exception as e:
             _set_provider_status("failed", error=e)
-            log_event(logger, logging.WARNING, "scan_gemini_attempt_failed", operation_id=operation_id, model=model_name, error_type=safe_error(e))
+            log_event(logger, logging.WARNING, "scan_gemini_attempt_failed", operation_id=operation_id, model=model_name, error_type=safe_error(error))
             if _is_rate_limited_error(e):
+                _set_provider_status("rate_limited", provider=model_name, error=e)
                 log_event(logger, logging.WARNING, "scan_gemini_rate_limited", operation_id=operation_id)
                 break
             continue

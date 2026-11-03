@@ -14,6 +14,7 @@ class Settings:
     GEMINI_RATE_LIMIT_RETRIES: int = max(0, min(2, int(os.getenv("GEMINI_RATE_LIMIT_RETRIES", "1"))))
     GEMINI_RATE_LIMIT_BACKOFF_SECONDS: float = max(0.0, min(5.0, float(os.getenv("GEMINI_RATE_LIMIT_BACKOFF_SECONDS", "1"))))
     GEMINI_RATE_LIMIT_MAX_WAIT_SECONDS: float = max(0.0, min(10.0, float(os.getenv("GEMINI_RATE_LIMIT_MAX_WAIT_SECONDS", "4"))))
+    GEMINI_MAX_CONCURRENCY: int = max(1, min(8, int(os.getenv("GEMINI_MAX_CONCURRENCY", "2"))))
     AUTH_JWT_SECRET: str = os.getenv("AUTH_JWT_SECRET", "")
     AUTH_OTP_PEPPER: str = os.getenv("AUTH_OTP_PEPPER", "")
     AUTH_ACCESS_TOKEN_MINUTES: int = int(os.getenv("AUTH_ACCESS_TOKEN_MINUTES", "60"))
