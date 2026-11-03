@@ -39,18 +39,18 @@ export default function SmsResultScreen({ result, onReset, activeTab, setActiveT
       labelEn: 'Suspicious Text Message',
       title: lang === 'ar' ? 'تنبيه: رسالة نصية مشبوهة (تحتاج تحقق)' : 'Warning: Suspicious Text Message',
       description: lang === 'ar'
-        ? 'تحتوي الرسالة على مصطلحات مريبة أو ادعاءات حثيثة لتحديث بيانات. يُنصح بالتأكد عبر القنوات الرسمية قبل التفاعل.'
-        : 'This message contains suspicious phrasing or urgent data update claims. Verify via official channels.',
+        ? 'رصد التحليل صياغة أو مؤشرات تستدعي الحذر؛ لا تثبت وحدها أن الرسالة احتيالية. تحقق عبر قناة رسمية تصل إليها بنفسك.'
+        : 'The analysis found wording or signals that warrant caution; this alone does not prove fraud. Verify through an official channel you access independently.',
       className: 'suspicious',
     },
     DANGEROUS: {
       icon: XCircleIcon,
-      labelAr: 'رسالة احتيالية خطيرة (Smishing)',
-      labelEn: 'High Risk Fraudulent SMS',
-      title: lang === 'ar' ? 'خطر! رسالة نصية احتيالية (Smishing)' : 'Danger! High Risk Smishing SMS',
+      labelAr: 'رسالة عالية الخطورة',
+      labelEn: 'High-risk SMS',
+      title: lang === 'ar' ? 'تحذير: أظهر الفحص مؤشرات خطر قوية' : 'Warning: The scan found strong risk signals',
       description: lang === 'ar'
-        ? 'ظهرت أدلة خطر قوية في التحليل المتاح. لا تفتح الروابط ولا تشارك كلمات المرور أو رموز OTP.'
-        : 'Strong risk evidence was found by the available analysis. Do not click links or share credentials.',
+        ? 'أظهر الرابط المضمّن أو التحليل المتاح مؤشرات خطر قوية؛ هذا لا يثبت هوية المرسل أو نيته. لا تفتح الرابط ولا تشارك كلمات المرور أو رموز التحقق.'
+        : 'The embedded link or available analysis showed strong risk signals; this does not verify the sender or intent. Do not open the link or share credentials or verification codes.',
       className: 'dangerous',
     },
     UNKNOWN: {
@@ -82,6 +82,13 @@ export default function SmsResultScreen({ result, onReset, activeTab, setActiveT
     : (extractedUrl ? [{ url: extractedUrl, classification: 'UNKNOWN', ml_classification: 'UNKNOWN', ml_source: 'UNAVAILABLE', virustotal: { status: 'UNKNOWN', total_engines: 0 } }] : []);
   const linksScannedCount = Number(result?.links_scanned_count ?? linkAnalyses.length);
   const linksNotScannedCount = Number(result?.links_not_scanned_count || 0);
+  const scannedUrlSet = new Set(linkAnalyses.map((item) => item?.url).filter(Boolean));
+  const unscannedUrls = Array.isArray(result?.unscanned_urls)
+    ? result.unscanned_urls
+    : extractedUrls.filter((url) => !scannedUrlSet.has(url));
+  const unscannedUrlCandidates = Array.isArray(result?.unscanned_url_candidates)
+    ? result.unscanned_url_candidates
+    : [];
   const provider = String(exp?.provider || result?.source || '').toUpperCase();
   const usesGemini = provider.includes('GEMINI');
   const geminiClassification = exp?.classification || result?.stages?.stage3_gemini_sms?.classification || '';
@@ -116,7 +123,7 @@ export default function SmsResultScreen({ result, onReset, activeTab, setActiveT
 
   const handleCopyReport = () => {
     if (isGuest || !navigator.clipboard?.writeText) return;
-    const reportText = `Nabeh SafeLink SMS Smishing Report:\nMessage: ${messageText}\nClassification: ${config.title}\nFraud Risk: ${fraudProb || 'N/A'}%\nClaimed Sender: ${exp.claimed_sender || 'N/A'}\nOfficial Domain: ${exp.official_domain || 'N/A'}\nOfficial Portal: ${officialPortal || 'N/A'}\nRecommendation: ${exp.recommendation || 'تحقق من المصدر الرسمي للرسالة.'}`;
+    const reportText = `Nabeh SafeLink SMS Security Analysis Report:\nMessage: ${messageText}\nClassification: ${config.title}\nFraud Risk: Not reported (no calibrated SMS score)\nClaimed Sender: ${exp.claimed_sender || 'N/A'}\nReference Domain (does not verify sender): ${exp.official_domain || 'N/A'}\nPortal (not independently verified): ${officialPortal || 'N/A'}\nRecommendation: ${exp.recommendation || 'تحقق من المصدر الرسمي للرسالة.'}`;
     navigator.clipboard.writeText(reportText);
     setCopied(true);
     setTimeout(() => setCopied(false), 2500);
@@ -143,7 +150,7 @@ export default function SmsResultScreen({ result, onReset, activeTab, setActiveT
               <span className="result-trust-title">
                 {lang === 'ar' ? 'تحليل أمان الرسائل النصية والهندسة الاجتماعية' : 'SMS TEXT & SOCIAL ENGINEERING AUDIT'}
               </span>
-              <span><MailIcon size={14} />{lang === 'ar' ? 'كشف الاستدراج والروابط' : 'Smishing & Lure Audit'}</span>
+              <span><MailIcon size={14} />{lang === 'ar' ? 'تحليل الرسالة ومخاطر الروابط' : 'SMS and Link Risk Analysis'}</span>
               <span><SparklesIcon size={14} />{lang === 'ar' ? 'مصادر خارجية عند توفرها' : 'External sources when available'}</span>
               {usesGemini && <span><SparklesIcon size={14} />Google Gemini</span>}
             </div>
@@ -158,27 +165,44 @@ export default function SmsResultScreen({ result, onReset, activeTab, setActiveT
                 {messageText}
               </div>
 
-              {extractedUrls.length > 0 && (
+              {(extractedUrls.length > 0 || unscannedUrlCandidates.length > 0) && (
                 <div style={{ marginTop: '14px', paddingTop: '10px', borderTop: '1px dashed var(--color-border-subtle)', fontSize: '0.9rem', color: 'var(--color-warning)' }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
                     <LinkIcon size={16} color="currentColor" />
-                    <strong>{lang === 'ar' ? `الروابط المستخرجة (${extractedUrls.length}):` : `Links extracted (${extractedUrls.length}):`}</strong>
+                    <strong>{extractedUrls.length > 0
+                      ? (lang === 'ar' ? `الروابط المستخرجة (${extractedUrls.length}):` : `Links extracted (${extractedUrls.length}):`)
+                      : (lang === 'ar' ? 'عُثر على صيغ روابط مموّهة:' : 'Defanged link patterns found:')}</strong>
                   </div>
-                  <ul style={{ margin: 0, paddingInlineStart: '22px', display: 'grid', gap: '6px' }}>
-                    {extractedUrls.map((url, index) => (
-                      <li key={`${url}-${index}`} dir="ltr" style={{ wordBreak: 'break-all', fontWeight: 'bold' }}>{url}</li>
-                    ))}
-                  </ul>
-                  <div style={{ marginTop: '8px' }}>
-                    {lang === 'ar'
-                      ? `أُحيل ${linksScannedCount} رابط إلى التحليل؛ عدد محركات الفحص يختلف حسب توفر المزود.`
-                      : `${linksScannedCount} link(s) were sent for analysis; engine availability varies.`}
-                    {linksNotScannedCount > 0 && (
-                      <strong style={{ display: 'block', color: 'var(--color-danger)', marginTop: '4px' }}>
-                        {lang === 'ar' ? `تنبيه: ${linksNotScannedCount} رابط لم يُفحص بسبب حد المعالجة؛ لا تفتحه.` : `Warning: ${linksNotScannedCount} link(s) were not scanned due to the processing limit; do not open them.`}
-                      </strong>
-                    )}
-                  </div>
+                  {extractedUrls.length > 0 && (
+                    <>
+                      <ul style={{ margin: 0, paddingInlineStart: '22px', display: 'grid', gap: '6px' }}>
+                        {extractedUrls.map((url, index) => (
+                          <li key={`${url}-${index}`} dir="ltr" style={{ wordBreak: 'break-all', fontWeight: 'bold' }}>{url}</li>
+                        ))}
+                      </ul>
+                      <div style={{ marginTop: '8px' }}>
+                        {lang === 'ar'
+                          ? `أُحيل ${linksScannedCount} رابط إلى التحليل؛ عدد محركات الفحص يختلف حسب توفر المزود.`
+                          : `${linksScannedCount} link(s) were sent for analysis; engine availability varies.`}
+                        {linksNotScannedCount > 0 && (
+                          <strong style={{ display: 'block', color: 'var(--color-danger)', marginTop: '4px' }}>
+                            {lang === 'ar' ? `تنبيه: ${linksNotScannedCount} رابط لم يُفحص بسبب حد المعالجة؛ لا تفتحه.` : `Warning: ${linksNotScannedCount} link(s) were not scanned due to the processing limit; do not open them.`}
+                          </strong>
+                        )}
+                      </div>
+                    </>
+                  )}
+                  {unscannedUrlCandidates.length > 0 && (
+                    <div role="alert" style={{ marginTop: '10px', padding: '10px', border: '1px solid var(--color-danger-border)', borderRadius: '8px', color: 'var(--color-danger)' }}>
+                      <strong>{lang === 'ar' ? 'لم تُفحص هذه الصيغ المموّهة ولم يتم تحويلها إلى روابط فعلية:' : 'These defanged patterns were not scanned or converted to live URLs:'}</strong>
+                      <ul style={{ margin: '6px 0', paddingInlineStart: '22px' }}>
+                        {unscannedUrlCandidates.map((candidate, index) => (
+                          <li key={`${candidate}-${index}`} dir="ltr" style={{ wordBreak: 'break-all' }}>{candidate}</li>
+                        ))}
+                      </ul>
+                      <span>{lang === 'ar' ? 'لا تُفكّها أو تفتحها إلا بعد التأكد من المصدر.' : 'Do not decode or open them unless you have verified the source.'}</span>
+                    </div>
+                  )}
                 </div>
               )}
             </div>
@@ -230,7 +254,7 @@ export default function SmsResultScreen({ result, onReset, activeTab, setActiveT
               {exp.claim_verdict_explanation && (
                 <div style={{ marginTop: '14px', padding: '12px 16px', borderRadius: '10px', background: classification === 'DANGEROUS' ? 'var(--color-danger-bg)' : 'var(--color-warning-bg)', border: `1px solid ${classification === 'DANGEROUS' ? 'var(--color-danger-border)' : 'var(--color-warning-border)'}`, color: classification === 'DANGEROUS' ? 'var(--color-danger)' : 'var(--color-warning)', fontSize: '0.9rem', fontWeight: 'bold', display: 'flex', alignItems: 'center', gap: '8px' }}>
                   <AlertTriangleIcon size={18} color="currentColor" />
-                  <span><strong>{lang === 'ar' ? 'حقيقة الادعاء:' : 'Claim Reality Check:'}</strong> {exp.claim_verdict_explanation}</span>
+                  <span><strong>{lang === 'ar' ? 'تقييم الادعاء وفق الأدلة المتاحة:' : 'Claim assessment from available evidence:'}</strong> {exp.claim_verdict_explanation}</span>
                 </div>
               )}
 
@@ -238,7 +262,7 @@ export default function SmsResultScreen({ result, onReset, activeTab, setActiveT
               <div style={{ marginTop: '16px', padding: '18px', borderRadius: '12px', background: 'var(--color-bg)', border: '1px solid var(--color-border)', boxShadow: '0 2px 10px rgba(0,0,0,0.03)' }}>
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '16px' }}>
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                    <span style={{ fontSize: '0.8rem', color: 'var(--color-text-subtle)', fontWeight: '600' }}>{lang === 'ar' ? 'الجهة المدعاة / المنتحلة:' : 'Claimed Sender Entity:'}</span>
+                    <span style={{ fontSize: '0.8rem', color: 'var(--color-text-subtle)', fontWeight: '600' }}>{lang === 'ar' ? 'الجهة التي تذكرها الرسالة (غير متحقق منها):' : 'Entity claimed by message (unverified):'}</span>
                     <strong style={{ fontSize: '0.95rem', color: 'var(--color-primary)' }}>{exp.claimed_sender || (lang === 'ar' ? 'جهة غير محددة' : 'Unverified Sender')}</strong>
                   </div>
 
@@ -248,13 +272,13 @@ export default function SmsResultScreen({ result, onReset, activeTab, setActiveT
                   </div>
 
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                    <span style={{ fontSize: '0.8rem', color: 'var(--color-text-subtle)', fontWeight: '600' }}>{lang === 'ar' ? 'طبيعة ادعاء الاستدراج:' : 'Lure / Claim Category:'}</span>
-                    <strong style={{ fontSize: '0.95rem', color: 'var(--color-warning)' }}>{exp.lure_type || (lang === 'ar' ? 'ادعاء تحديث بيانات/طلب حثيث' : 'Data Update Lure')}</strong>
+                    <span style={{ fontSize: '0.8rem', color: 'var(--color-text-subtle)', fontWeight: '600' }}>{lang === 'ar' ? 'نمط محتمل للرسالة:' : 'Possible message pattern:'}</span>
+                    <strong style={{ fontSize: '0.95rem', color: 'var(--color-warning)' }}>{exp.lure_type || (lang === 'ar' ? 'غير محدد' : 'Undetermined')}</strong>
                   </div>
 
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
                     <span style={{ fontSize: '0.8rem', color: 'var(--color-text-subtle)', fontWeight: '600' }}>{lang === 'ar' ? 'حالة الأصالة والمصداقية:' : 'Authenticity Status:'}</span>
-                    <strong style={{ fontSize: '0.95rem', color: classification === 'DANGEROUS' ? 'var(--color-danger)' : classification === 'SUSPICIOUS' ? 'var(--color-warning)' : 'var(--color-text-subtle)' }}>
+                    <strong style={{ fontSize: '0.95rem', color: 'var(--color-text-subtle)' }}>
                       {exp.authenticity_status || (lang === 'ar' ? 'لم يتم التحقق من هوية المرسل' : 'Sender identity not verified')}
                     </strong>
                   </div>
@@ -387,16 +411,29 @@ export default function SmsResultScreen({ result, onReset, activeTab, setActiveT
                       {engines === 0 && <div className="detail-item" style={{ gridColumn: '1 / -1' }}><span className="detail-label">VirusTotal status</span><span className="detail-value">{linkVt.error || linkVt.status || 'UNKNOWN'}</span></div>}
                     </div>
                   )}
-                  {vtMalicious === 0 && (linkMl === 'DANGEROUS' || linkMl === 'SUSPICIOUS') && (
-                    <p style={{ fontSize: '0.78rem', color: 'var(--color-warning)', marginTop: '8px', marginBottom: 0, padding: '6px 10px', background: 'var(--color-warning-bg)', borderRadius: '6px', border: '1px solid var(--color-warning-border)' }}>
+                  {engines > 0 && vtMalicious === 0 && vtSuspicious === 0 && (linkMl === 'DANGEROUS' || linkMl === 'SUSPICIOUS') && (
+                    <p role="note" style={{ fontSize: '0.78rem', color: 'var(--color-warning)', marginTop: '8px', marginBottom: 0, padding: '6px 10px', background: 'var(--color-warning-bg)', borderRadius: '6px', border: '1px solid var(--color-warning-border)' }}>
                       {lang === 'ar'
-                        ? 'عدم رصده في المحركات العالمية يشير لكون النطاق حديث التسجيل (Zero-Day Phishing) ولم يُدرج بعد في القوائم السوداء.'
-                        : 'Unflagged by global engines indicates a newly registered Zero-Day domain not yet blacklisted.'}
+                        ? 'لم تسجّل المحركات المتاحة رصدًا ضارًا أو مريبًا لهذا الرابط في هذا الفحص؛ غياب الرصد لا يثبت حداثة النطاق أو سلامته.'
+                        : 'Available engines did not report this link as malicious or suspicious in this scan; absence of a report does not prove the domain is new or safe.'}
                     </p>
                   )}
                 </div>
               );
             })}
+
+            {unscannedUrls.map((unscannedUrl, index) => (
+              <div className="card details-block" key={`unscanned-${unscannedUrl}-${index}`} role="status" style={{ borderInlineStart: '4px solid var(--color-danger)' }}>
+                <h3 className="details-title" style={{ color: 'var(--color-danger)' }}>
+                  <LinkIcon size={18} color="currentColor" />
+                  <span>{lang === 'ar' ? `رابط غير مفحوص (${index + 1}):` : `Unscanned link (${index + 1}):`}</span>
+                </h3>
+                <div dir="ltr" style={{ wordBreak: 'break-all', fontSize: '0.82rem' }}>{unscannedUrl}</div>
+                <p style={{ fontSize: '0.78rem', color: 'var(--color-danger)', marginBottom: 0 }}>
+                  {lang === 'ar' ? 'تجاوز الرابط حد المعالجة ولم يُرسل للفحص؛ لا تفتحه اعتمادًا على نتيجة هذه الرسالة.' : 'This link exceeded the processing limit and was not scanned; do not treat the message result as clearance for it.'}
+                </p>
+              </div>
+            ))}
 
             {linksNotScannedCount > 0 && (
               <div className="card details-block" role="alert" style={{ borderInlineStart: '4px solid var(--color-danger)', color: 'var(--color-danger)' }}>

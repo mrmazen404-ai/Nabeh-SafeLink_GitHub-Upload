@@ -413,7 +413,7 @@ Do not return probability, confidence, or numeric risk scores.
                     log_event(logger, logging.WARNING, "gemini_sms_schema_validation_failed", operation_id=operation_id, model=model_name, mode="search")
                     continue
                 parsed["provider"] = f"GEMINI_SEARCH ({model_name})"
-                parsed = _sanitize_official_portal_url(parsed, text_content, extracted_url)
+                parsed = _sanitize_official_portal_url(parsed, text_content, extracted_url, language)
                 log_event(logger, logging.INFO, "gemini_sms_analysis_succeeded", operation_id=operation_id, model=model_name, mode="search")
                 _set_provider_status("ready", "GEMINI_SEARCH")
                 return parsed
@@ -447,7 +447,7 @@ Do not return probability, confidence, or numeric risk scores.
                     log_event(logger, logging.WARNING, "gemini_sms_schema_validation_failed", operation_id=operation_id, model=model_name, mode="json")
                     continue
                 parsed["provider"] = f"GEMINI_AI ({model_name})"
-                parsed = _sanitize_official_portal_url(parsed, text_content, extracted_url)
+                parsed = _sanitize_official_portal_url(parsed, text_content, extracted_url, language)
                 log_event(logger, logging.INFO, "gemini_sms_analysis_succeeded", operation_id=operation_id, model=model_name, mode="json")
                 _set_provider_status("ready", "GEMINI")
                 return parsed
@@ -460,7 +460,7 @@ Do not return probability, confidence, or numeric risk scores.
                 continue
 
     local_fallback["provider"] = "LOCAL_AI_RULES"
-    return _sanitize_official_portal_url(local_fallback, text_content, extracted_url)
+    return _sanitize_official_portal_url(local_fallback, text_content, extracted_url, language)
 
 
 def _matched_known_brand_domain(text_content: str, extracted_url: str) -> str | None:
@@ -477,7 +477,12 @@ def _matched_known_brand_domain(text_content: str, extracted_url: str) -> str | 
     return None
 
 
-def _sanitize_official_portal_url(parsed: dict, text_content: str, extracted_url: str) -> dict:
+def _sanitize_official_portal_url(
+    parsed: dict,
+    text_content: str,
+    extracted_url: str,
+    language: str = "ar",
+) -> dict:
     if not isinstance(parsed, dict):
         return parsed
 
@@ -485,6 +490,7 @@ def _sanitize_official_portal_url(parsed: dict, text_content: str, extracted_url
     # This client has no independent verification evidence contract.
     parsed["official_portal_url"] = "غير متاح"
     parsed["official_domain"] = "غير متاح"
+    parsed["authenticity_status"] = "غير متحقق" if language == "ar" else "Unverified"
 
     return parsed
 
@@ -550,7 +556,7 @@ def _local_sms_analysis(text_content: str, extracted_url: str = "", language: st
 
 def _default_rec(classification: str, language: str = "ar") -> str:
     recs = {
-        "SAFE": {"ar": "يمكنك المتابعة والتصفح بأمان", "en": "You can proceed safely"},
+        "SAFE": {"ar": "لم تُرصد مؤشرات في الفحص المتاح؛ تحقق من الوجهة قبل إدخال بيانات حساسة", "en": "No indicators were reported in the available scan; verify the destination before entering sensitive data"},
         "SUSPICIOUS": {"ar": "تحقق من المصدر قبل إدخال أي بيانات", "en": "Verify the source before entering data"},
         "DANGEROUS": {"ar": "تجنب النقر أو مشاركة هذا الرابط", "en": "Avoid clicking or sharing this link"},
         "UNKNOWN": {"ar": "توخَّ الحذر وتجنب مشاركة بياناتك", "en": "Exercise caution and avoid sharing info"},
@@ -652,25 +658,25 @@ def _local_explanation(
     # 2. Typosquatting Check
     if any(spoof in host for spoof in ["paypa1", "googl3", "micros0ft", "app1e", "amaz0n"]):
         if is_ar:
-            reasons.append("تزوير النطاق (Typosquatting): تم استبدال بعض الحروف بأرقام لخداع المستخدم وإظهار الرابط كأنه موقع رسمي.")
+            reasons.append("نمط نطاق شبيه بعلامة معروفة: تظهر حروف مستبدلة بأرقام؛ هذه إشارة آلية لا تثبت نية مالك النطاق.")
         else:
-            reasons.append("Typosquatting Detected: Character substitution (numbers for letters) used to deceive users.")
+            reasons.append("Look-alike domain pattern: letters appear replaced by digits; this heuristic does not establish the domain owner's intent.")
 
     # 3. Suspicious Phishing Keywords Check
     found_keywords = [kw for kw in SUSPICIOUS_KEYWORDS_AR.keys() if kw in full_url_lower]
     if found_keywords and classification in {"DANGEROUS", "SUSPICIOUS"}:
         kw_str = ", ".join(f"'{kw}'" for kw in found_keywords[:3])
         if is_ar:
-            reasons.append(f"استخدام كلمات احتيالية استدراجية: يحتوي الرابط على مصطلحات مثل ({kw_str}) لاستدراج المستخدم لإدخال معلومات بنكية أو شخصية.")
+            reasons.append(f"مصطلحات مرصودة في الرابط ({kw_str}) قد تظهر في صفحات تسجيل الدخول أو التحقق؛ وجودها وحده لا يثبت الاحتيال.")
         else:
-            reasons.append(f"Deceptive Keywords: URL contains keywords ({kw_str}) designed to solicit sensitive data.")
+            reasons.append(f"Observed URL terms ({kw_str}) can appear on sign-in or verification pages; their presence alone does not prove fraud.")
 
     # 4. High-Risk TLD Suffix Check
     if suffix in {".xyz", ".top", ".info", ".site", ".online", ".work", ".vip", ".cc", ".icu", ".club", ".tk", ".ml", ".ga", ".cf", ".gq"} and classification in {"DANGEROUS", "SUSPICIOUS"}:
         if is_ar:
-            reasons.append(f"امتداد نطاق عالي المخاطر ({suffix}): يُستخدم هذا الامتداد بكثرة في الحملات الاحتيالية والمواقع المزيفة.")
+            reasons.append(f"امتداد النطاق ({suffix}) إشارة سياقية ضعيفة في هذا الفحص؛ الامتداد وحده لا يثبت الاحتيال.")
         else:
-            reasons.append(f"High-Risk TLD Extension ({suffix}): Commonly associated with phishing and untrusted domains.")
+            reasons.append(f"The {suffix} suffix is only a weak contextual signal in this scan; the suffix alone does not prove phishing.")
 
     # 5. ML Model Feature Probability Signal
     ml_prob = ml_evidence.get("phishing_prob")
@@ -694,14 +700,20 @@ def _local_explanation(
     if not reasons:
         if classification in {"DANGEROUS", "SUSPICIOUS"}:
             if is_ar:
-                reasons.append("تم رصد مؤشرات خطورة أمنية غير اعتيادية في هيكلية النطاق والبيانات الوصفية للرابط.")
+                reasons.append("تصنيف الفحص خطير، لكن لم تتوفر تفاصيل أدلة إضافية في استجابة المزود.")
             else:
-                reasons.append("Detected unusual security risk indicators in domain structure and metadata.")
+                reasons.append("The scan classified the URL as dangerous, but the provider response included no further evidence details.")
+        elif classification == "SAFE":
+            reasons.append(
+                "لم تُرصد مؤشرات في الأدلة المتاحة لهذا الفحص؛ هذا لا يثبت سلامة الرابط أو موثوقية مالكه."
+                if is_ar else
+                "No indicators were reported by the evidence available in this scan; this does not prove the URL or its owner is safe or trusted."
+            )
         else:
             if is_ar:
-                reasons.append("نطاق معتمد وموثوق خالٍ من مؤشرات التهديد السيبراني.")
+                reasons.append("الأدلة المتاحة غير كافية للتحقق من سلامة الرابط أو هوية مالكه.")
             else:
-                reasons.append("Verified trusted domain with no security threat indicators.")
+                reasons.append("Available evidence is insufficient to verify the URL or its owner's trustworthiness.")
 
     display_target = host if host else "الرابط"
     if classification == "DANGEROUS":
@@ -720,11 +732,11 @@ def _local_explanation(
             recommendation = "Verify the official source and avoid entering sensitive information."
     elif classification == "SAFE":
         if is_ar:
-            summary = f"الرابط آمن وموثوق: ينتمي '{display_target}' إلى نطاق موثوق معتمد وتأكدت سلامته عبر محركات الفحص."
-            recommendation = "يمكنك التصفح والمتابعة بأمان."
+            summary = f"لم تُرصد مؤشرات تهديد في الأدلة المتاحة للرابط '{display_target}'؛ لا تثبت هذه النتيجة أنه آمن."
+            recommendation = "تحقق من عنوان الموقع والجهة عبر قناة رسمية قبل إدخال أي بيانات حساسة."
         else:
-            summary = f"Safe Link: URL '{display_target}' belongs to a trusted domain verified by security engines."
-            recommendation = "You can proceed safely."
+            summary = f"No threat indicators were reported for '{display_target}' by the available evidence; this does not prove the URL is safe."
+            recommendation = "Verify the destination through an official channel before entering sensitive information."
     else:
         if is_ar:
             summary = f"تعذر التحقق بدقة من الرابط '{display_target}'. يرجى توخي الحذر."
@@ -736,11 +748,11 @@ def _local_explanation(
     claimed_sender = matched_brand_ar if (matched_brand_ar and is_ar) else (matched_brand_en if matched_brand_en else ("جهة غير معروفة" if is_ar else "Unverified Entity"))
     official_dom_str = official_domain if official_domain else ("غير متاح" if is_ar else "N/A")
 
-    lure_str = "ادعاء إيقاف حساب/طلب تحديث بطاقات" if is_ar else "Bank account/card update lure"
+    lure_str = "غير محدد" if is_ar else "Undetermined"
     if "prize" in full_url_lower or "reward" in full_url_lower or "مبروك" in full_url_lower:
-        lure_str = "ادعاء فوز بجائزة أو مكافأة مالية" if is_ar else "Fake prize/reward claim"
+        lure_str = "مصطلح مكافأة مرصود؛ الادعاء غير متحقق" if is_ar else "Reward-related wording observed; claim unverified"
 
-    auth_status = "احتيالية (Fake SMS)" if classification == "DANGEROUS" else "مشبوهة (Unverified)" if classification == "SUSPICIOUS" else "رسمية (Official SMS)"
+    auth_status = "غير متحقق" if is_ar else "Unverified"
 
     return {
         "classification": classification,

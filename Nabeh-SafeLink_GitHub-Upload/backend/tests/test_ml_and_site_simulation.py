@@ -8,10 +8,25 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.main import app
+import app.main as main_module
+import app.scans.routes as scan_routes
 from app.ml.predictor import extract_features, predict_url, is_shortener_url
+from app.security.guest_rate_limit import enforce_guest_rate_limit
 from app.scans.service import ScanService
 
 client = TestClient(app)
+
+
+@pytest.fixture
+def guest_scan_without_external_services(monkeypatch):
+    async def allow_guest():
+        return None
+
+    app.dependency_overrides[enforce_guest_rate_limit] = allow_guest
+    monkeypatch.setattr(main_module, "get_system_settings", lambda: {"system.maintenance_mode": False})
+    monkeypatch.setattr(scan_routes, "setting_enabled", lambda *_args: True)
+    yield
+    app.dependency_overrides.pop(enforce_guest_rate_limit, None)
 
 # =====================================================================
 # 1. REAL-WORLD BENIGN URLS (Must classify as SAFE)
@@ -143,33 +158,44 @@ class TestSiteSimulationE2E:
             assert "registered_users" in data["data"]
             assert "scans" in data["data"]
 
-    def test_guest_scan_url_simulation(self):
+    def test_guest_scan_url_simulation(self, guest_scan_without_external_services, monkeypatch):
+        async def fake_guest_scan(cls, input_type, raw_input, language="ar"):
+            assert input_type == "URL"
+            assert raw_input == "https://www.google.com"
+            assert language == "ar"
+            return {
+                "input_type": "URL",
+                "classification": "UNKNOWN",
+                "stages": {
+                    "stage1_ml": {"classification": "UNKNOWN"},
+                    "stage2_virustotal": {"status": "UNKNOWN"},
+                    "stage3_gemini": {"provider": "TEST_MOCK"},
+                },
+            }
+
+        monkeypatch.setattr(ScanService, "process_guest_scan", classmethod(fake_guest_scan))
         payload = {
             "input_type": "URL",
             "input_value": "https://www.google.com",
             "language": "ar"
         }
         res = client.post("/api/v1/scans/guest", json=payload)
-        assert res.status_code in (200, 429, 503)
-        if res.status_code == 200:
-            data = res.json()
-            assert data["success"] is True
-            scan_data = data["data"]
-            assert scan_data["input_type"] == "URL"
-            assert "classification" in scan_data
-            assert "stages" in scan_data
-            assert "stage1_ml" in scan_data["stages"]
-            assert "stage2_virustotal" in scan_data["stages"]
-            assert "stage3_gemini" in scan_data["stages"]
+        assert res.status_code == 200
+        data = res.json()
+        assert data["success"] is True
+        scan_data = data["data"]
+        assert scan_data["input_type"] == "URL"
+        assert scan_data["classification"] == "UNKNOWN"
+        assert set(scan_data["stages"]) == {"stage1_ml", "stage2_virustotal", "stage3_gemini"}
 
-    def test_guest_scan_invalid_input_validation(self):
+    def test_guest_scan_invalid_input_validation(self, guest_scan_without_external_services):
         payload = {
             "input_type": "URL",
             "input_value": "not-a-valid-http-url-schema://test",
             "language": "ar"
         }
         res = client.post("/api/v1/scans/guest", json=payload)
-        assert res.status_code in (400, 422, 503)
+        assert res.status_code == 422
 
     def test_legal_document_endpoint(self):
         res = client.get("/api/v1/legal/TERMS?language=ar")

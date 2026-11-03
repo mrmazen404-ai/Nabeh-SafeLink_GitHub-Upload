@@ -14,6 +14,12 @@ from app.scans.routes import ScanRequest, _redact_uncalibrated_scores, _validate
         "http:///missing-host",
         "https://bad host.example/path",
         "https://example.com\\@evil.test/path",
+        "افحص https://example.com/path الآن",
+        "https://one.example/path https://two.example/path",
+        "https://user@example.com/path",
+        "https://a..b/path",
+        "https://999.999.999.999/path",
+        "ftp://example.com/file",
     ],
 )
 def test_url_input_rejects_malformed_targets(value):
@@ -22,10 +28,13 @@ def test_url_input_rejects_malformed_targets(value):
     assert exc.value.status_code == 422
 
 
-def test_url_input_accepts_public_domains_and_extracted_urls():
-    assert _validate_input(ScanRequest(input_type="URL", input_value="example.photography/path")) == "example.photography/path"
-    assert _validate_input(ScanRequest(input_type="URL", input_value="example.com:8443/path")) == "example.com:8443/path"
-    assert _validate_input(ScanRequest(input_type="URL", input_value="افحص https://example.com/path الآن")) == "افحص https://example.com/path الآن"
+def test_url_input_accepts_and_normalizes_one_web_url():
+    assert _validate_input(ScanRequest(input_type="URL", input_value="example.photography/path")) == "https://example.photography/path"
+    assert _validate_input(ScanRequest(input_type="URL", input_value="example.com:8443/path")) == "https://example.com:8443/path"
+    assert _validate_input(ScanRequest(input_type="URL", input_value="HTTPS://EXAMPLE.COM/a?x=1#part")) == "https://example.com/a?x=1#part"
+    assert _validate_input(ScanRequest(input_type="URL", input_value="https://[2001:0db8::1]:8443/path")) == "https://[2001:db8::1]:8443/path"
+    unicode_host = "مثال.إختبار".encode("idna").decode("ascii")
+    assert _validate_input(ScanRequest(input_type="URL", input_value="مثال.إختبار/مسار")) == f"https://{unicode_host}/مسار"
 
 
 def test_text_input_is_not_misvalidated_as_a_url():

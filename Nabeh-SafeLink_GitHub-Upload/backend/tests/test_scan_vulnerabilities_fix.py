@@ -9,15 +9,15 @@ def test_extract_url_from_text_naked_domains_and_explicit_urls():
     assert ScanService.extract_url_from_text("زر موقعنا http://my-site.org") == "http://my-site.org"
 
     # 2. www. prefix
-    assert ScanService.extract_url_from_text("زوروا موقعنا www.alrajhibank.com.sa") == "www.alrajhibank.com.sa"
+    assert ScanService.extract_url_from_text("زوروا موقعنا www.alrajhibank.com.sa") == "https://www.alrajhibank.com.sa"
 
     # Public suffixes are not restricted to a hand-maintained TLD list.
-    assert ScanService.extract_url_from_text("راجع example.photography/path، ثم تابع") == "example.photography/path"
+    assert ScanService.extract_url_from_text("راجع example.photography/path، ثم تابع") == "https://example.photography/path"
     assert ScanService.extract_url_from_text("افتح https://example.com/path؟") == "https://example.com/path"
 
     # 3. Naked domains without http/https or www
-    assert ScanService.extract_url_from_text("تحديث البيانات عبر bank-alrajhi-update.com/login الآن") == "bank-alrajhi-update.com/login"
-    assert ScanService.extract_url_from_text("سدد الغرامة من خلال stc-pay-portal.sa فوراً") == "stc-pay-portal.sa"
+    assert ScanService.extract_url_from_text("تحديث البيانات عبر bank-alrajhi-update.com/login الآن") == "https://bank-alrajhi-update.com/login"
+    assert ScanService.extract_url_from_text("سدد الغرامة من خلال stc-pay-portal.sa فوراً") == "https://stc-pay-portal.sa"
 
     # 4. Text without any URL or domain
     assert ScanService.extract_url_from_text("السلام عليكم ورحمة الله وبركاته كيف حالك اليوم؟") == ""
@@ -40,8 +40,17 @@ def test_local_sms_analysis_normal_text_is_inconclusive():
     res = _local_sms_analysis(text_content=normal_text, extracted_url="", language="ar")
     assert res["classification"] == "UNKNOWN"
     assert res["fraud_probability"] is None
+    assert "غير متحقق" in res["authenticity_status"]
+    assert "رسمية" not in res["authenticity_status"]
     # When no known brand is mentioned, official_portal_url MUST be "غير متاح"
     assert res["official_portal_url"] == "غير متاح"
+
+
+def test_safe_default_recommendation_does_not_guarantee_safety():
+    from app.gemini.client import _default_rec
+
+    assert "بأمان" not in _default_rec("SAFE", "ar")
+    assert "proceed safely" not in _default_rec("SAFE", "en").lower()
 
 
 def test_local_sms_analysis_known_brand_does_not_verify_official_portal():
@@ -136,7 +145,7 @@ def test_extract_urls_from_text_returns_distinct_links_in_message_order():
 
     assert ScanService.extract_urls_from_text(text) == [
         "https://one.example/login",
-        "www.two.example/path",
+        "https://www.two.example/path",
     ]
 
 
@@ -164,6 +173,23 @@ async def test_sms_scan_routes_each_embedded_url_and_reports_unscanned_links(mon
     assert sorted(ml_urls) == sorted(expected_scanned)
     assert sorted(vt_urls) == sorted(expected_scanned)
     assert result["extracted_urls"] == urls
+    assert result["unscanned_urls"] == urls[5:]
     assert result["links_scanned_count"] == 5
     assert result["links_not_scanned_count"] == 1
     assert result["classification"] == "UNKNOWN"
+
+
+@pytest.mark.anyio
+async def test_sms_scan_reports_defanged_urls_without_sending_them_to_providers(monkeypatch):
+    monkeypatch.setattr("app.scans.service.setting_enabled_fail_closed", lambda *_: False)
+
+    result = await ScanService.process_text_scan(
+        "تحقق من hxxps://evil.example/path أو example[.]org/login"
+    )
+
+    assert result["extracted_urls"] == []
+    assert result["unscanned_url_candidates"] == [
+        "hxxps://evil.example/path",
+        "example[.]org/login",
+    ]
+    assert result["links_scanned_count"] == 0

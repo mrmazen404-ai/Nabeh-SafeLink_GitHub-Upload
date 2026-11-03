@@ -17,6 +17,7 @@ from app.config import settings
 from app.public.metrics import record_platform_scan_metric
 from app.system_settings import setting_enabled_fail_closed
 from app.scans.text_rules import analyze_message_indicators
+from app.scans.url_utils import extract_defanged_urls_from_text, extract_web_urls_from_text, normalize_web_url
 
 logger = logging.getLogger(__name__)
 MAX_EMBEDDED_URLS = 5
@@ -35,39 +36,7 @@ class ScanPersistenceError(Exception):
 class ScanService:
     @staticmethod
     def extract_urls_from_text(text: str) -> list[str]:
-        if not text:
-            return []
-        explicit_pattern = re.compile(r"(?:https?://|www\.)[^\s,;،؛؟۔\"'<>]+", re.IGNORECASE)
-        tld_pattern = (
-            r"\b(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+"
-            r"[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?"
-            r"(?:/[^\s,;،؛؟۔\"'<>()]*)?"
-        )
-        explicit_matches = list(explicit_pattern.finditer(text))
-        spans = [(match.start(), match.end()) for match in explicit_matches]
-        matches = [(match.start(), match.group(0)) for match in explicit_matches]
-        for match in re.finditer(tld_pattern, text, re.IGNORECASE):
-            if any(start <= match.start() < end for start, end in spans):
-                continue
-            matches.append((match.start(), match.group(0)))
-
-        urls = []
-        seen = set()
-        for _, candidate in sorted(matches, key=lambda item: item[0]):
-            candidate = candidate.rstrip(".,;:!?')")
-            normalized = candidate if candidate.lower().startswith(("http://", "https://")) else f"https://{candidate}"
-            parsed = urlsplit(normalized)
-            key = (
-                parsed.scheme.lower(),
-                parsed.netloc.lower(),
-                parsed.path or "/",
-                parsed.query,
-                parsed.fragment,
-            )
-            if candidate and key not in seen:
-                seen.add(key)
-                urls.append(candidate)
-        return urls
+        return extract_web_urls_from_text(text)
 
     @staticmethod
     def extract_url_from_text(text: str) -> str:
@@ -154,7 +123,7 @@ class ScanService:
 
         vt_counts_consistent = vt_total > 0 and (vt_malicious + vt_suspicious + vt_harmless) <= vt_total
         vt_status_consistent = not (
-            (vt_status == "SAFE" and vt_malicious > 0)
+            (vt_status == "SAFE" and (vt_malicious > 0 or vt_suspicious > 0))
             or (vt_status == "SUSPICIOUS" and vt_malicious == 0 and vt_suspicious == 0)
             or (vt_status == "DANGEROUS" and vt_malicious < 3)
         )
@@ -287,7 +256,7 @@ class ScanService:
     def _local_explanation(classification: str, language: str) -> dict:
         english = language == "en"
         text = {
-            "SAFE": ("لم تظهر مؤشرات خطر في التحليل المحلي." if not english else "No risk indicators were found by local analysis."),
+            "SAFE": ("لم تُرصد مؤشرات خطر في الأدلة المتاحة؛ هذا لا يثبت أن الرابط آمن." if not english else "No risk indicators were reported by the available evidence; this does not prove the URL is safe."),
             "SUSPICIOUS": ("ظهرت مؤشرات تستدعي الحذر والتحقق من المصدر." if not english else "Indicators require caution and source verification."),
             "DANGEROUS": ("ظهرت مؤشرات خطر قوية؛ لا تفتح الرابط ولا تشارك بياناتك." if not english else "Strong risk indicators were found; do not open or share data."),
             "UNKNOWN": ("تعذر التحقق محلياً؛ لا تعتبر النتيجة آمنة." if not english else "Local verification was inconclusive; do not treat this as safe."),
@@ -334,6 +303,7 @@ class ScanService:
     @classmethod
     async def process_url_scan(cls, target_url: str, language: str = "ar") -> dict:
         """Standalone 3-Stage URL Link Scanner (ML -> VirusTotal -> Gemini Research)."""
+        target_url = normalize_web_url(target_url)
         operation_id = resource_id(target_url)
         started = time.perf_counter()
         log_event(logger, logging.INFO, "scan_started", operation_id=operation_id, input_type="URL", mode="url")
@@ -449,14 +419,16 @@ class ScanService:
 
     @classmethod
     async def process_text_scan(cls, text_content: str, language: str = "ar") -> dict:
-        """100% AI-Driven SMS / Text Message Smishing Scanner (Gemini AI API + Link Audit Pipeline)."""
+        """Analyze message signals, audit embedded links, and use Gemini when enabled."""
         operation_id = resource_id(text_content)
         started = time.perf_counter()
         log_event(logger, logging.INFO, "scan_started", operation_id=operation_id, input_type="TEXT", mode="sms")
         deadline = asyncio.get_running_loop().time() + settings.SCAN_TOTAL_TIMEOUT_SECONDS
         all_extracted_urls = cls.extract_urls_from_text(text_content)
+        unscanned_url_candidates = extract_defanged_urls_from_text(text_content)
         extracted_urls = all_extracted_urls[:MAX_EMBEDDED_URLS]
-        unscanned_url_count = max(0, len(all_extracted_urls) - len(extracted_urls))
+        unscanned_urls = all_extracted_urls[len(extracted_urls):]
+        unscanned_url_count = len(unscanned_urls)
         log_event(logger, logging.INFO, "scan_validation_succeeded", operation_id=operation_id, input_type="TEXT", mode="sms", links_detected=len(all_extracted_urls), links_scanned=len(extracted_urls))
         extracted_url = extracted_urls[0] if extracted_urls else ""
         semaphore = asyncio.Semaphore(2)
@@ -630,6 +602,8 @@ class ScanService:
             "extracted_url": extracted_url or None,
             "selected_url": selected_url,
             "extracted_urls": all_extracted_urls,
+            "unscanned_urls": unscanned_urls,
+            "unscanned_url_candidates": unscanned_url_candidates,
             "links_scanned_count": len(embedded_url_analyses),
             "links_not_scanned_count": unscanned_url_count,
             "embedded_url_analyses": [
@@ -724,8 +698,7 @@ class ScanService:
         if input_type == "TEXT":
             scan_res = await cls.process_text_scan(raw_input, language=language)
         else:
-            target = cls.extract_url_from_text(raw_input) or raw_input
-            scan_res = await cls.process_url_scan(target, language=language)
+            scan_res = await cls.process_url_scan(raw_input, language=language)
             scan_res["input_value"] = raw_input
         scan_res["is_guest"] = True
         scan_res["scan_id"] = None
@@ -759,8 +732,7 @@ class ScanService:
         if input_type == "TEXT":
             scan_res = await cls.process_text_scan(raw_input, language=language)
         else:
-            target = cls.extract_url_from_text(raw_input) or raw_input
-            scan_res = await cls.process_url_scan(target, language=language)
+            scan_res = await cls.process_url_scan(raw_input, language=language)
             scan_res["input_value"] = raw_input
 
         scan_res["is_guest"] = False

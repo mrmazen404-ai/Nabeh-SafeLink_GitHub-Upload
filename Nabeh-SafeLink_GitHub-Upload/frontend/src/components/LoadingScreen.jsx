@@ -16,18 +16,18 @@ export default function LoadingScreen({ url, scanType = 'URL', onCancel }) {
     if (isText) {
       return lang === 'ar'
         ? [
-            'جاري فحص الرسالة النصية ورصد أساليب الاستدراج...',
-            'وكيل الذكاء الاصطناعي يحلل النص ويبحث في المصادر الرسمية عبر الويب...',
-            'فحص الرابط المدمج ورصد مخاطر سرقة الحسابات ورموز OTP...',
-            'تقسيم الرسالة وتحديد مدى المصداقية والأصالة المعتمدة...',
-            'توليد تقرير الفحص التفسيري وخطة التصرف الآمن...',
+            'جاري تحليل نص الرسالة وإشارات الاستدراج المحتملة...',
+            'مراجعة المعلومات المتاحة؛ هوية المرسل لا تُوثق بهذا الفحص...',
+            'فحص الروابط المضمنة بحثاً عن مؤشرات خطر...',
+            'فصل ادعاءات الرسالة عن أدلة فحص الرابط...',
+            'إعداد ملخص النتائج وخطوات الحذر المناسبة...',
           ]
         : [
-            'Analyzing text message for smishing & fraud tactics...',
-            'AI Agent searching web & verifying official sources...',
-            'Auditing embedded links & detecting OTP theft risk...',
-            'Segmenting message & evaluating authenticity...',
-            'Generating comprehensive security & action plan report...',
+            'Analyzing message wording and possible social-engineering signals...',
+            'Reviewing available information; sender identity is not verified by this scan...',
+            'Checking embedded links for risk indicators...',
+            'Separating message claims from link-analysis evidence...',
+            'Preparing findings and cautious next steps...',
           ];
     }
 
@@ -127,8 +127,8 @@ export default function LoadingScreen({ url, scanType = 'URL', onCancel }) {
         <h2 className="loading-title">
           {isText
             ? lang === 'ar'
-              ? 'جاري فحص الرسالة النصية واصطياد الاحتيال'
-              : 'Performing SMS Smishing & Fraud Analysis'
+              ? 'جاري تحليل الرسالة والروابط المضمنة'
+              : 'Analyzing SMS and Embedded Links'
             : t('loading.title') || (lang === 'ar' ? 'جاري الفحص الدقيق' : 'Scanning URL')}
         </h2>
 

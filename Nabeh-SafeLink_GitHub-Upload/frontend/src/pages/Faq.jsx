@@ -24,8 +24,8 @@ export default function Faq({ activeTab, setActiveTab }) {
       category: 'general',
       question: lang === 'ar' ? 'كيف أفحص رابطاً أو رسالة نصية عبر نبيه؟' : 'How do I scan a URL or SMS message with Nabeh?',
       answer: lang === 'ar'
-        ? 'انسخ الرابط الإلكتروني أو نص الرسالة المشبوهة، ثم انتقل إلى تبويب "الفحص" في القائمة الرئيسية. الصق النص في حقل الإدخال وانقر على "بدء الفحص الآمن". ستظهر النتيجة التقييمية خلال ثوانٍ قليلة.'
-        : 'Copy the suspicious URL or SMS message text, then go to the "Scan" tab in the navigation. Paste it into the input field and click "Start Safe Scan". Results will appear in seconds.',
+        ? 'انسخ رابطاً واحداً إلى تبويب الرابط، أو الصق نص الرسالة وروابطها في تبويب الرسالة، ثم اختر "بدء الفحص". تظهر النتيجة بعد اكتمال التحليل.'
+        : 'Paste one URL in URL mode, or paste message text and its links in message mode, then select "Start Scan". Results appear when analysis completes.',
       linkToGuide: true
     },
     {
@@ -73,24 +73,24 @@ export default function Faq({ activeTab, setActiveTab }) {
       category: 'privacy',
       question: lang === 'ar' ? 'هل تُحفظ الروابط أو النصوص التي أفحصها؟ ومن يستطيع رؤيتها؟' : 'Are my scanned links or texts saved, and who can view them?',
       answer: lang === 'ar'
-        ? 'تُحفظ سجلات الفحص محلياً على جهازك في سياق الجلسة والسجل لتتمكن من مراجعة عملياتك. لا يتم مشاركة مدخلاتك الحساسة أو بياناتك الشخصية مع أي طرف ثالث.'
-        : 'Scan logs are kept locally on your session history so you can review past operations. Your sensitive personal data is never sold or shared with third parties.',
+        ? 'قد تُرسل الروابط إلى VirusTotal، وقد يُرسل نص الرسالة (حتى 600 حرف في طلب Gemini الحالي) مع أدلة الروابط عند تفعيل التحليل. تُحفظ نتائج فحوصات الحساب في سجل الخدمة، أما فحص الضيف فلا يُحفظ في سجل Nabeh. لا تُدخل كلمات مرور أو رموز تحقق أو بيانات شخصية حساسة.'
+        : 'URLs may be sent to VirusTotal, and up to 600 characters of message text plus link evidence may be sent to Gemini when enabled. Authenticated scan results are saved in the service history; guest scans are not saved to Nabeh history. Do not enter passwords, verification codes, or sensitive personal data.',
     },
     {
       id: 'q8',
       category: 'url_scan',
       question: lang === 'ar' ? 'لماذا قد يفشل الفحص أو تظهر النتيجة "غير محددة" (Unknown)؟' : 'Why might a scan fail or display an "Unknown" classification?',
       answer: lang === 'ar'
-        ? 'قد يحدث ذلك في حال انقطاع الاتصال بالإنترنت، أو إذا كان الرابط غير صالح أو خادماً جديداً كلياً لم يُسجل في قواعد بيانات التهديدات بعد. يرجى التأكد من كتابة URL صحيح وإعادة الفحص.'
-        : 'This may occur if network connectivity drops, if the URL syntax is invalid, or if it is a brand-new domain not yet indexed. Verify the URL syntax and try again.',
+        ? 'قد تظهر UNKNOWN عند عدم كفاية الأدلة أو تعذر استجابة بعض مزودي الفحص. المدخل غير الصالح يُرفض برسالة خطأ بدلاً من تصنيفه؛ وUNKNOWN لا تعني أن النطاق حديث أو آمن.'
+        : 'UNKNOWN may appear when evidence is insufficient or a scan provider does not respond. Invalid input is rejected with an error rather than classified; UNKNOWN does not mean a domain is new or safe.',
     },
     {
       id: 'q9',
       category: 'msg_scan',
       question: lang === 'ar' ? 'هل يمكن استخدام نبيه لفحص الرسائل النصية القصيرة (SMS) والبريد؟' : 'Can Nabeh inspect SMS messages and email text?',
       answer: lang === 'ar'
-        ? 'نعم، يتيح نبيه تبويب "فحص نص/رسالة" لتحليل نصوص الرسائل والبريد لكشف محاولات الهندسة الاجتماعية، الوعود المالية الكاذبة، والروابط التصيدية المضمنة.'
-        : 'Yes, Nabeh provides an "SMS / Text Scan" tab to inspect message text for social engineering, fake monetary promises, and embedded phishing URLs.',
+        ? 'نعم. يحلل النظام مؤشرات النص ويستخرج الروابط المرئية لفحصها ضمن حد المعالجة، ويعرض الروابط التي لم تُفحص أو كانت مموهة. النتائج مؤشرات مساعدة ولا تثبت وحدها أن الرسالة احتيالية.'
+        : 'Yes. The scanner analyzes text signals and extracts visible links for scanning within its processing limit; it reports links that were not scanned or were defanged. Results are indicators and do not alone prove the message is fraudulent.',
     },
     {
       id: 'q10',

@@ -25,6 +25,24 @@ def test_parse_response_counts_additional_engine_statuses():
     assert result["additional_engine_statuses"] == {"timeout": 3, "type-unsupported": 1}
 
 
+def test_one_suspicious_engine_is_not_reported_as_clean():
+    result = client._parse_response({
+        "data": {
+            "attributes": {
+                "last_analysis_stats": {
+                    "malicious": 0,
+                    "suspicious": 1,
+                    "harmless": 9,
+                }
+            }
+        }
+    })
+
+    assert result["status"] == "SUSPICIOUS"
+    assert result["suspicious"] == 1
+    assert result["malicious"] == 0
+
+
 def test_network_exception_does_not_return_raw_exception(monkeypatch):
     class FailingClient:
         async def __aenter__(self):

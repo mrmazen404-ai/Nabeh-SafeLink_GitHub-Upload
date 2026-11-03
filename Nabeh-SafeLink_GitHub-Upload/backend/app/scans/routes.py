@@ -1,9 +1,6 @@
 from datetime import datetime, timezone
-import ipaddress
 import logging
-import re
 from typing import Literal, Optional
-from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response
 from pydantic import BaseModel, Field
@@ -11,6 +8,7 @@ from pydantic import BaseModel, Field
 from app.auth.security import AuthSecurityError, get_authenticated_user
 from app.security.guest_rate_limit import enforce_guest_rate_limit
 from app.scans.service import ScanPersistenceError, ScanService
+from app.scans.url_utils import normalize_web_url
 from app.db.supabase_client import supabase
 from app.system_settings import SystemSettingsUnavailable, setting_enabled
 from app.observability import log_event, safe_error
@@ -60,29 +58,13 @@ def _validate_input(request: ScanRequest) -> str:
     if not value:
         raise HTTPException(status_code=400, detail="المدخل مطلوب")
     if request.input_type == "URL":
-        candidate = ScanService.extract_url_from_text(value) or value
-        explicit_scheme = re.match(r"^[A-Za-z][A-Za-z0-9+.-]*:", candidate)
-        has_http_scheme = candidate.lower().startswith(("http://", "https://"))
-        host_with_port = re.match(r"^(?:\[[0-9a-f:.]+\]|[^:/\s]+):\d+(?:[/?#]|$)", candidate, re.IGNORECASE)
-        if explicit_scheme and not has_http_scheme and not host_with_port:
-            raise HTTPException(status_code=422, detail="أدخل رابط ويب صالحاً يستخدم HTTP أو HTTPS")
-        if any(ord(char) <= 0x20 or ord(char) == 0x7f for char in candidate) or "\\" in candidate:
-            raise HTTPException(status_code=422, detail="أدخل رابط ويب صالحاً يستخدم HTTP أو HTTPS")
-        normalized = candidate if has_http_scheme else f"https://{candidate}"
         try:
-            parsed = urlsplit(normalized)
-            host = parsed.hostname or ""
-            _ = parsed.port
+            return normalize_web_url(value)
         except ValueError:
-            # Invalid ports and malformed URL literals are rejected before providers run.
-            raise HTTPException(status_code=422, detail="أدخل رابط ويب صالحاً يستخدم HTTP أو HTTPS") from None
-        try:
-            ipaddress.ip_address(host)
-            host_is_ip = True
-        except ValueError:
-            host_is_ip = False
-        if parsed.scheme.lower() not in {"http", "https"} or not host or not (host_is_ip or host.lower() == "localhost" or "." in host):
-            raise HTTPException(status_code=422, detail="أدخل رابط ويب صالحاً يستخدم HTTP أو HTTPS")
+            raise HTTPException(
+                status_code=422,
+                detail="أدخل رابط ويب واحداً صالحاً يستخدم HTTP أو HTTPS؛ استخدم وضع الرسالة للنصوص أو الروابط المتعددة",
+            ) from None
     return value
 
 

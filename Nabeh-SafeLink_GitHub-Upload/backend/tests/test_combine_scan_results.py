@@ -54,6 +54,21 @@ def test_safe_requires_positive_evidence():
     print("✓ VT clean + ML safe → SAFE")
 
 
+def test_single_vt_suspicious_signal_cannot_be_combined_as_safe():
+    vt = {"status": "SUSPICIOUS", "malicious": 0, "suspicious": 1, "harmless": 9, "total_engines": 10}
+    ml = {"classification": "SAFE", "phishing_prob": 0.05, "source": "ML_MODEL"}
+
+    result = ScanService.combine_scan_results(vt, ml)
+
+    assert result["classification"] != "SAFE"
+
+
+def test_local_safe_explanation_does_not_claim_verified_trust():
+    explanation = ScanService._local_explanation("SAFE", "ar")
+    assert "لا يثبت" in explanation["summary"]
+    assert "موثوق" not in explanation["summary"]
+
+
 def test_ml_only_safe_is_unknown():
     result = ScanService.combine_scan_results(
         {"status": "UNKNOWN", "total_engines": 0},

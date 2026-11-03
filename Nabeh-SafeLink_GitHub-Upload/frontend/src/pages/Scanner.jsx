@@ -195,6 +195,10 @@ export default function Scanner({ initialUrl = '', onClearInitial, activeTab, se
       setError(t('scanner.errEmptyInput'));
       return;
     }
+    if (scanType === 'URL' && /\s/u.test(textToScan.trim())) {
+      setError(t('scanner.errUrlOnly'));
+      return;
+    }
 
     if (loading) return;
 
@@ -285,6 +289,7 @@ export default function Scanner({ initialUrl = '', onClearInitial, activeTab, se
               <button
                 type="button"
                 className={`scanner-toggle-btn ${scanType === 'URL' ? 'active' : ''}`}
+                aria-pressed={scanType === 'URL'}
                 onClick={() => setScanType('URL')}
               >
                 <LinkIcon size={16} color="currentColor" />
@@ -293,6 +298,7 @@ export default function Scanner({ initialUrl = '', onClearInitial, activeTab, se
               <button
                 type="button"
                 className={`scanner-toggle-btn ${scanType === 'TEXT' ? 'active' : ''}`}
+                aria-pressed={scanType === 'TEXT'}
                 onClick={() => setScanType('TEXT')}
               >
                 <span>{t('scanner.tabText')}</span>
@@ -324,19 +330,39 @@ export default function Scanner({ initialUrl = '', onClearInitial, activeTab, se
                 <span className="scanner-input-icon">
                   <LinkIcon size={18} color="var(--color-primary)" />
                 </span>
-                <input
-                  ref={inputRef}
-                  type="text"
-                  className="scanner-input"
-                  placeholder={scanType === 'URL' ? t('scanner.placeholderUrl') : t('scanner.placeholderText')}
-                  value={url}
-                  onChange={(e) => {
-                    setUrl(e.target.value);
-                    if (error) setError('');
-                  }}
-                  onKeyDown={(e) => e.key === 'Enter' && handleScan()}
-                  dir="ltr"
-                />
+                {scanType === 'TEXT' ? (
+                  <textarea
+                    ref={inputRef}
+                    className="scanner-input scanner-textarea"
+                    placeholder={t('scanner.placeholderText')}
+                    aria-label={t('scanner.inputLabelText')}
+                    rows={5}
+                    maxLength={4096}
+                    value={url}
+                    onChange={(e) => {
+                      setUrl(e.target.value);
+                      if (error) setError('');
+                    }}
+                    onKeyDown={(e) => e.key === 'Enter' && (e.ctrlKey || e.metaKey) && handleScan()}
+                    dir={lang === 'ar' ? 'rtl' : 'ltr'}
+                  />
+                ) : (
+                  <input
+                    ref={inputRef}
+                    type="text"
+                    className="scanner-input"
+                    placeholder={t('scanner.placeholderUrl')}
+                    aria-label={t('scanner.inputLabelUrl')}
+                    maxLength={4096}
+                    value={url}
+                    onChange={(e) => {
+                      setUrl(e.target.value);
+                      if (error) setError('');
+                    }}
+                    onKeyDown={(e) => e.key === 'Enter' && handleScan()}
+                    dir="ltr"
+                  />
+                )}
                 {url ? (
                   <button
                     className="input-action-btn clear-btn"

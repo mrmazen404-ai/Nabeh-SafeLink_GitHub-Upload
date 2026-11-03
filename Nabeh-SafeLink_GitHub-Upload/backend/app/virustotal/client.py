@@ -178,7 +178,7 @@ def _parse_response(data: Dict[str, Any]) -> Dict[str, Any]:
         if malicious >= 3:
             status = "DANGEROUS"
             confidence = min(1.0, malicious / 10.0)
-        elif malicious >= 1 or suspicious >= 2:
+        elif malicious >= 1 or suspicious >= 1:
             status = "SUSPICIOUS"
             confidence = 0.6
         elif harmless > 0 and malicious == 0:

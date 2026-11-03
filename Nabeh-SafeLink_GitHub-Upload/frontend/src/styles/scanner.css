@@ -130,6 +130,16 @@
   box-shadow: 0 0 0 3px rgba(30, 144, 255, 0.2);
 }
 
+.scanner-textarea {
+  min-height: 150px;
+  padding-block: 16px;
+  border-radius: 16px;
+  resize: vertical;
+  font-family: var(--font-sans);
+  line-height: 1.55;
+  text-align: start;
+}
+
 .input-action-btn {
   position: absolute;
   left: var(--space-3);

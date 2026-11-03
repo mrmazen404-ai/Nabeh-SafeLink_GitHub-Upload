@@ -44,9 +44,9 @@ export default function Home({ onNavigate, onQuickScan, activeTab, setActiveTab,
           {/* Hero Banner */}
           <div className="home-hero-card">
             <span className="hero-tag">NABEH SECURITY DASHBOARD</span>
-            <h1 className="hero-title">نظام الكشف والوقاية الذكي</h1>
+            <h1 className="hero-title">منصة فحص مؤشرات التهديد</h1>
             <p className="hero-desc">
-              فحص الروابط والرسائل بدقة متناهية عبر الذكاء الاصطناعي ومحركات الأمان العالمية لضمان سلامة جهازك وبياناتك.
+              تفحص الروابط والرسائل وتعرض مؤشرات وفق المصادر المتاحة؛ لا تضمن النتيجة سلامة الرابط أو هوية المرسل.
             </p>
             <div style={{ display: 'flex', gap: '12px' }}>
               <button
@@ -65,10 +65,10 @@ export default function Home({ onNavigate, onQuickScan, activeTab, setActiveTab,
             <div className="card stat-card">
               <div className="stat-header">
                 <CheckCircleIcon size={22} color="var(--color-success)" />
-                <span className="stat-label">آمن</span>
+                <span className="stat-label">لم تُرصد مؤشرات</span>
               </div>
               <span className="stat-value">{loading ? '…' : (stats?.safe ?? '—')}</span>
-              <span className="stat-sub">روابط موثوقة</span>
+              <span className="stat-sub">لا يثبت ذلك سلامة الرابط</span>
             </div>
 
             <div className="card stat-card">
@@ -83,10 +83,10 @@ export default function Home({ onNavigate, onQuickScan, activeTab, setActiveTab,
             <div className="card stat-card">
               <div className="stat-header">
                 <XCircleIcon size={22} color="var(--color-danger)" />
-                <span className="stat-label">خطر</span>
+                <span className="stat-label">عالي الخطورة</span>
               </div>
               <span className="stat-value">{loading ? '…' : (stats?.dangerous ?? '—')}</span>
-              <span className="stat-sub">تهديد إلكتروني</span>
+              <span className="stat-sub">وفق الفحوصات المتاحة</span>
             </div>
           </div>
         </div>

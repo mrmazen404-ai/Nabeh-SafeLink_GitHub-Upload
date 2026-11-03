@@ -174,7 +174,7 @@ export default function UserGuide({ activeTab, setActiveTab }) {
                     <div className="step-item">
                       <div className="step-badge">3</div>
                       <div>
-                        <strong>بدء الفحص واستعراض التقرير:</strong> اضغط على زر "بدء الفحص الآمن" وتابع التحليل التفسيري التوليدي.
+                        <strong>بدء الفحص واستعراض التقرير:</strong> اضغط على زر "بدء الفحص" وتابع المؤشرات والتوصيات المتاحة.
                       </div>
                     </div>
                   </div>

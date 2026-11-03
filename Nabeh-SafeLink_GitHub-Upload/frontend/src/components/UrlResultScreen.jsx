@@ -39,18 +39,18 @@ export default function UrlResultScreen({ result, onReset, activeTab, setActiveT
       labelEn: 'Suspicious URL',
       title: lang === 'ar' ? 'تنبيه: رابط مشبوه يسترعي الحذر' : 'Warning: Suspicious Link',
       description: lang === 'ar'
-        ? 'يحتوي الرابط على مؤشرات تستدعي الحذر مثل عمر النطاق أو التركيب الهيكلي. يُفضل التأكد من المصدر قبل المتابعة.'
-        : 'This link exhibits structural or domain anomalies. Caution and verification are recommended.',
+        ? 'صنّفت بعض مصادر الفحص الرابط على أنه مريب؛ هذا لا يثبت وحده أنه ضار. تحقق من الوجهة والمصدر قبل المتابعة.'
+        : 'One or more available sources classified the URL as suspicious; this alone does not prove it is harmful. Verify the destination before proceeding.',
       className: 'suspicious',
     },
     DANGEROUS: {
       icon: XCircleIcon,
-      labelAr: 'رابط احتيالي خطير (Phishing)',
-      labelEn: 'High Risk Dangerous URL',
-      title: lang === 'ar' ? 'خطر! رابط احتيالي غير آمن' : 'Danger! Malicious Phishing Link',
+      labelAr: 'رابط عالي الخطورة',
+      labelEn: 'High-risk URL',
+      title: lang === 'ar' ? 'تحذير: صنّفت الفحوصات الرابط على أنه خطير' : 'Warning: Available checks classified this URL as dangerous',
       description: lang === 'ar'
-        ? 'تم رصد مؤشرات خطورة أمنية وانتحال لعلامة تجارية أو توزيع برمجيات ضارة. لا تفتح الرابط ولا تدخل بياناتك الحساسة!'
-        : 'High-risk security threats, brand impersonation, or malware distribution detected. Do not proceed or enter credentials!',
+        ? 'هذه نتيجة الفحوصات المتاحة وليست إثباتًا لهوية المالك أو لنوع التهديد. لا تفتح الرابط ولا تدخل بياناتك الحساسة.'
+        : 'This is the result of available checks, not proof of the owner’s identity or exact threat type. Do not open the URL or enter sensitive data.',
       className: 'dangerous',
     },
     UNKNOWN: {
@@ -88,12 +88,14 @@ export default function UrlResultScreen({ result, onReset, activeTab, setActiveT
   const vtStatus = String(vt.status || '').toUpperCase();
   const hasVtStatus = Boolean(vtStatus || vt.error);
 
-  const totalEngines = vt.total_engines || 0;
+  const totalEngines = Number(vt.total_engines || 0);
+  const vtMaliciousCount = Number(vt.malicious || 0);
+  const vtSuspiciousCount = Number(vt.suspicious || 0);
   const geminiProvider = String(exp.provider || result?.stages?.stage3_gemini?.provider || '').toUpperCase();
   const usesGemini = geminiProvider.includes('GEMINI');
   const assistantClassification = String(exp.classification || result?.stages?.stage3_gemini?.classification || '').toUpperCase();
-  const maliciousPct = totalEngines > 0 ? ((vt.malicious || 0) / totalEngines) * 100 : 0;
-  const suspiciousPct = totalEngines > 0 ? ((vt.suspicious || 0) / totalEngines) * 100 : 0;
+  const maliciousPct = totalEngines > 0 ? (vtMaliciousCount / totalEngines) * 100 : 0;
+  const suspiciousPct = totalEngines > 0 ? (vtSuspiciousCount / totalEngines) * 100 : 0;
   const harmlessPct = totalEngines > 0 ? ((vt.harmless || 0) / totalEngines) * 100 : 0;
 
   const handleCopyReport = () => {
@@ -267,11 +269,11 @@ export default function UrlResultScreen({ result, onReset, activeTab, setActiveT
                     <span className="detail-value">{totalEngines}</span>
                   </div>
                 </div>
-                {(vt.malicious || 0) === 0 && (ml.classification === 'DANGEROUS' || ml.classification === 'SUSPICIOUS') && (
-                  <p style={{ fontSize: '0.78rem', color: 'var(--color-warning)', marginTop: '12px', marginBottom: 0, padding: '8px 12px', background: 'var(--color-warning-bg)', borderRadius: '8px', border: '1px solid var(--color-warning-border)' }}>
+                {totalEngines > 0 && vtMaliciousCount === 0 && vtSuspiciousCount === 0 && (ml.classification === 'DANGEROUS' || ml.classification === 'SUSPICIOUS') && (
+                  <p role="note" style={{ fontSize: '0.78rem', color: 'var(--color-warning)', marginTop: '12px', marginBottom: 0, padding: '8px 12px', background: 'var(--color-warning-bg)', borderRadius: '8px', border: '1px solid var(--color-warning-border)' }}>
                     {lang === 'ar'
-                      ? 'عدم رصده في المحركات العالمية يشير لكون النطاق حديث التسجيل (Zero-Day Phishing) ولم يُدرج بعد في القوائم السوداء.'
-                      : 'Unflagged by global engines indicates a newly registered Zero-Day domain not yet blacklisted.'}
+                      ? 'لم تسجّل المحركات المتاحة رصدًا ضارًا أو مريبًا لهذا الرابط في هذا الفحص؛ غياب الرصد لا يثبت حداثة النطاق أو سلامته.'
+                      : 'Available engines did not report this link as malicious or suspicious in this scan; absence of a report does not prove the domain is new or safe.'}
                   </p>
                 )}
                 {totalEngines === 0 && (
