@@ -176,5 +176,6 @@ async def enforce_guest_rate_limit(request: Request) -> None:
                 "X-RateLimit-Limit": str(decision.limit),
                 "X-RateLimit-Remaining": "0",
                 "Cache-Control": "no-store",
+                "X-Dependency-Error": "UPSTASH_RATE_LIMIT_UNAVAILABLE" if decision.unavailable else "RATE_LIMIT_EXCEEDED",
             },
         )

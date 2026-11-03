@@ -112,7 +112,7 @@ async def request_logging_middleware(request: Request, call_next):
             except SystemSettingsUnavailable:
                 response = JSONResponse(
                     status_code=503,
-                    content={"detail": "خدمة النظام غير متاحة مؤقتاً"},
+                    content={"detail": "خدمة النظام غير متاحة مؤقتاً", "code": "SYSTEM_SETTINGS_UNAVAILABLE"},
                     headers={"Cache-Control": "no-store"},
                 )
             else:

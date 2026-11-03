@@ -42,7 +42,11 @@ class VisitEvent(BaseModel):
 def _visitor_hash(visitor_id: str) -> str:
     salt = settings.VISITOR_HASH_SALT
     if not salt or len(salt) < 32:
-        raise HTTPException(status_code=503, detail="Visitor metrics are not configured")
+        raise HTTPException(
+            status_code=503,
+            detail="Visitor metrics are not configured",
+            headers={"X-Dependency-Error": "VISITOR_HASH_SALT_MISSING"},
+        )
     return hashlib.sha256(f"{salt}:{visitor_id}".encode()).hexdigest()
 
 

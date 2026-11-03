@@ -96,7 +96,11 @@ async def create_guest_scan(
     try:
         guest_scanning_enabled = setting_enabled("features.guest_scans_enabled")
     except SystemSettingsUnavailable:
-        raise HTTPException(status_code=503, detail="تعذر التحقق من إعدادات الفحص") from None
+        raise HTTPException(
+            status_code=503,
+            detail="تعذر التحقق من إعدادات الفحص",
+            headers={"X-Dependency-Error": "SYSTEM_SETTINGS_UNAVAILABLE"},
+        ) from None
     if not guest_scanning_enabled:
         raise HTTPException(status_code=403, detail="فحص الضيف متوقف حالياً؛ سجّل الدخول لاستخدام الفحص")
     try:
