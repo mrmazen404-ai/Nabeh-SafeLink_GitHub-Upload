@@ -136,7 +136,7 @@ export default function SmsResultScreen({ result, onReset, activeTab, setActiveT
       <main className="page-container">
         <div className="result-desktop-grid">
           {/* Main SMS Smishing Analysis Panel */}
-          <section className="card result-main-card" aria-label="شاشة نتيجة فحص الرسائل النصية">
+          <section className="card result-main-card" aria-label={lang === 'ar' ? 'شاشة نتيجة فحص الرسائل النصية' : 'SMS scan result screen'}>
             {/* Status Badge */}
             <div className={`result-badge result-badge-${config.className}`} role="status">
               <StatusIcon size={32} color="currentColor" />
@@ -161,7 +161,7 @@ export default function SmsResultScreen({ result, onReset, activeTab, setActiveT
                 <MailIcon size={18} color="var(--color-secondary)" />
                 {lang === 'ar' ? 'نص الرسالة المفحوصة (SMS Text Content):' : 'Inspected SMS Text:'}
               </span>
-              <div className="url-text" dir="auto" style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', marginTop: '10px', fontSize: '1rem', lineHeight: '1.6', color: 'var(--color-text-primary)' }}>
+              <div className="url-text sms-message-content" dir="auto" tabIndex={0} aria-label={lang === 'ar' ? 'نص الرسالة الكامل المفحوص' : 'Full inspected message text'} style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', marginTop: '10px', fontSize: '1rem', lineHeight: '1.6', color: 'var(--color-text-primary)' }}>
                 {messageText}
               </div>
 
@@ -175,7 +175,7 @@ export default function SmsResultScreen({ result, onReset, activeTab, setActiveT
                   </div>
                   {extractedUrls.length > 0 && (
                     <>
-                      <ul style={{ margin: 0, paddingInlineStart: '22px', display: 'grid', gap: '6px' }}>
+                      <ul className="sms-link-list" tabIndex={0} aria-label={lang === 'ar' ? 'قائمة الروابط المستخرجة' : 'Extracted links'} style={{ margin: 0, paddingInlineStart: '22px', display: 'grid', gap: '6px' }}>
                         {extractedUrls.map((url, index) => (
                           <li key={`${url}-${index}`} dir="ltr" style={{ wordBreak: 'break-all', fontWeight: 'bold' }}>{url}</li>
                         ))}
@@ -250,17 +250,20 @@ export default function SmsResultScreen({ result, onReset, activeTab, setActiveT
                 </div>
               )}
 
+              <details className="result-details-disclosure sms-analysis-disclosure">
+                <summary>{lang === 'ar' ? 'تفاصيل التحليل والأدلة' : 'Analysis details and evidence'}</summary>
+                <div className="sms-analysis-details">
               {/* Hoax Claim Verdict Notice */}
               {exp.claim_verdict_explanation && (
-                <div style={{ marginTop: '14px', padding: '12px 16px', borderRadius: '10px', background: classification === 'DANGEROUS' ? 'var(--color-danger-bg)' : 'var(--color-warning-bg)', border: `1px solid ${classification === 'DANGEROUS' ? 'var(--color-danger-border)' : 'var(--color-warning-border)'}`, color: classification === 'DANGEROUS' ? 'var(--color-danger)' : 'var(--color-warning)', fontSize: '0.9rem', fontWeight: 'bold', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <div className="sms-claim-verdict" style={{ marginTop: '14px', padding: '12px 16px', borderRadius: '10px', background: classification === 'DANGEROUS' ? 'var(--color-danger-bg)' : 'var(--color-warning-bg)', border: `1px solid ${classification === 'DANGEROUS' ? 'var(--color-danger-border)' : 'var(--color-warning-border)'}`, color: classification === 'DANGEROUS' ? 'var(--color-danger)' : 'var(--color-warning)', fontSize: '0.9rem', fontWeight: 'bold', display: 'flex', alignItems: 'center', gap: '8px' }}>
                   <AlertTriangleIcon size={18} color="currentColor" />
                   <span><strong>{lang === 'ar' ? 'تقييم الادعاء وفق الأدلة المتاحة:' : 'Claim assessment from available evidence:'}</strong> {exp.claim_verdict_explanation}</span>
                 </div>
               )}
 
               {/* Message Breakdown Grid */}
-              <div style={{ marginTop: '16px', padding: '18px', borderRadius: '12px', background: 'var(--color-bg)', border: '1px solid var(--color-border)', boxShadow: '0 2px 10px rgba(0,0,0,0.03)' }}>
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '16px' }}>
+              <div className="sms-breakdown-card" style={{ marginTop: '16px', padding: '18px', borderRadius: '12px', background: 'var(--color-bg)', border: '1px solid var(--color-border)', boxShadow: '0 2px 10px rgba(0,0,0,0.03)' }}>
+                <div className="sms-breakdown-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '16px' }}>
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
                     <span style={{ fontSize: '0.8rem', color: 'var(--color-text-subtle)', fontWeight: '600' }}>{lang === 'ar' ? 'الجهة التي تذكرها الرسالة (غير متحقق منها):' : 'Entity claimed by message (unverified):'}</span>
                     <strong style={{ fontSize: '0.95rem', color: 'var(--color-primary)' }}>{exp.claimed_sender || (lang === 'ar' ? 'جهة غير محددة' : 'Unverified Sender')}</strong>
@@ -285,14 +288,14 @@ export default function SmsResultScreen({ result, onReset, activeTab, setActiveT
                 </div>
               </div>
 
-              <div role="note" style={{ marginTop: '20px', padding: '14px 16px', borderRadius: '12px', background: 'var(--color-bg-subtle)', border: '1px solid var(--color-border-subtle)', color: 'var(--color-text-subtle)', fontSize: '0.85rem', lineHeight: '1.6' }}>
+              <div role="note" className="sms-calibration-note" style={{ marginTop: '20px', padding: '14px 16px', borderRadius: '12px', background: 'var(--color-bg-subtle)', border: '1px solid var(--color-border-subtle)', color: 'var(--color-text-subtle)', fontSize: '0.85rem', lineHeight: '1.6' }}>
                 {lang === 'ar'
                   ? 'لا نعرض درجات رقمية للضغط أو سرقة البيانات أو الانتحال قبل معايرتها والتحقق منها على مجموعة مستقلة.'
                   : 'Numeric urgency, credential-theft, and impersonation scores are withheld until independently validated and calibrated.'}
               </div>
 
               {Array.isArray(exp.reasons) && exp.reasons.length > 0 && (
-                <ul className="reasons-list" style={{ marginTop: '18px' }}>
+                <ul className="reasons-list sms-reasons-list" style={{ marginTop: '18px' }}>
                   {exp.reasons.map((reason, i) => (
                     <li key={i}>
                       <PinIcon size={14} color="var(--color-secondary)" />
@@ -303,7 +306,7 @@ export default function SmsResultScreen({ result, onReset, activeTab, setActiveT
               )}
 
               {/* OFFICIAL PORTAL & STEP-BY-STEP ACTION PLAN */}
-              <div style={{ marginTop: '24px', padding: '20px', borderRadius: '14px', background: 'var(--color-secondary-subtle)', border: '1px solid var(--color-secondary)', boxShadow: '0 4px 12px rgba(30,94,255,0.06)' }}>
+              <div className="sms-action-plan" style={{ marginTop: '24px', padding: '20px', borderRadius: '14px', background: 'var(--color-secondary-subtle)', border: '1px solid var(--color-secondary)', boxShadow: '0 4px 12px rgba(30,94,255,0.06)' }}>
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '12px', marginBottom: '14px' }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
                     <ShieldCheckIcon size={24} color="var(--color-secondary)" />
@@ -341,6 +344,8 @@ export default function SmsResultScreen({ result, onReset, activeTab, setActiveT
                   </p>
                 ) : null}
               </div>
+                </div>
+              </details>
             </div>
           </section>
 
