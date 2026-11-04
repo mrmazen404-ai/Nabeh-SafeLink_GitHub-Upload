@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import Header from './Header';
 import { useLanguage } from '../context/LanguageContext';
+import UrlEvidenceCard from './UrlEvidenceCard';
 import {
   CheckCircleIcon,
   AlertTriangleIcon,
@@ -89,6 +90,7 @@ export default function UrlResultScreen({ result, onReset, activeTab, setActiveT
   const hasVtStatus = Boolean(vtStatus || vt.error);
 
   const totalEngines = Number(vt.total_engines || 0);
+  const hasVtCounts = vt.analysis_data_available === true || totalEngines > 0;
   const vtMaliciousCount = Number(vt.malicious || 0);
   const vtSuspiciousCount = Number(vt.suspicious || 0);
   const geminiProvider = String(exp.provider || result?.stages?.stage3_gemini?.provider || '').toUpperCase();
@@ -232,6 +234,8 @@ export default function UrlResultScreen({ result, onReset, activeTab, setActiveT
               </div>
             )}
 
+            <UrlEvidenceCard card={result?.evidence_card} lang={lang} t={t} />
+
           </section>
 
           {/* Engine Side Panel */}
@@ -251,7 +255,7 @@ export default function UrlResultScreen({ result, onReset, activeTab, setActiveT
                   {vt.harmless > 0 && <div style={{ width: `${harmlessPct}%`, background: 'var(--color-success)' }} title={`Harmless: ${vt.harmless}`} />}
                 </div>}
 
-                <div className="details-grid">
+                {hasVtCounts && <div className="details-grid">
                   <div className="detail-item">
                     <span className="detail-label">{t('result.vtDangerous')}</span>
                     <span className="detail-value" style={{ color: 'var(--color-danger)' }}>{vt.malicious || 0}</span>
@@ -268,15 +272,15 @@ export default function UrlResultScreen({ result, onReset, activeTab, setActiveT
                     <span className="detail-label">{t('result.vtTotal')}</span>
                     <span className="detail-value">{totalEngines}</span>
                   </div>
-                </div>
-                {totalEngines > 0 && vtMaliciousCount === 0 && vtSuspiciousCount === 0 && (ml.classification === 'DANGEROUS' || ml.classification === 'SUSPICIOUS') && (
+                </div>}
+                {hasVtCounts && totalEngines > 0 && vtMaliciousCount === 0 && vtSuspiciousCount === 0 && (ml.classification === 'DANGEROUS' || ml.classification === 'SUSPICIOUS') && (
                   <p role="note" style={{ fontSize: '0.78rem', color: 'var(--color-warning)', marginTop: '12px', marginBottom: 0, padding: '8px 12px', background: 'var(--color-warning-bg)', borderRadius: '8px', border: '1px solid var(--color-warning-border)' }}>
                     {lang === 'ar'
                       ? 'لم تسجّل المحركات المتاحة رصدًا ضارًا أو مريبًا لهذا الرابط في هذا الفحص؛ غياب الرصد لا يثبت حداثة النطاق أو سلامته.'
                       : 'Available engines did not report this link as malicious or suspicious in this scan; absence of a report does not prove the domain is new or safe.'}
                   </p>
                 )}
-                {totalEngines === 0 && (
+                {!hasVtCounts && (
                   <p className="muted" role="status" style={{ marginTop: '12px' }}>
 
                     {vt.error || (vtStatus === 'NOT_APPLICABLE'
