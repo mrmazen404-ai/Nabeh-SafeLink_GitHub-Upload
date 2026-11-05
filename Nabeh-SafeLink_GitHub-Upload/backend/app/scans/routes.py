@@ -1,13 +1,15 @@
 from datetime import datetime, timezone
 import logging
+import re
 from typing import Literal, Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response
 from pydantic import BaseModel, Field
 
 from app.auth.security import AuthSecurityError, get_authenticated_user
+from app.config import settings
 from app.security.guest_rate_limit import enforce_guest_rate_limit
-from app.scans.service import ScanPersistenceError, ScanService
+from app.scans.service import ScanIdempotencyConflictError, ScanPersistenceError, ScanService
 from app.scans.url_utils import normalize_web_url
 from app.db.supabase_client import supabase
 from app.system_settings import SystemSettingsUnavailable, setting_enabled
@@ -120,6 +122,7 @@ async def create_authenticated_scan(
     request: ScanRequest,
     response: Response,
     authorization: Optional[str] = Header(None),
+    idempotency_key: Optional[str] = Header(None, alias="Idempotency-Key"),
 ):
     """Persist a scan only for the account verified from the bearer token."""
     response.headers["Cache-Control"] = "no-store, private"
@@ -130,6 +133,12 @@ async def create_authenticated_scan(
         log_event(logger, logging.WARNING, "scan_validation_failed", input_type=request.input_type, error_code="INVALID_INPUT", user_context="authenticated")
         raise
     user_id = await get_required_user_id(authorization)
+    if idempotency_key is not None:
+        idempotency_key = idempotency_key.strip()
+        if not 8 <= len(idempotency_key) <= 128 or not re.fullmatch(r"[A-Za-z0-9._:-]+", idempotency_key):
+            raise HTTPException(status_code=422, detail="مفتاح Idempotency-Key غير صالح")
+        if not settings.SCAN_IDEMPOTENCY_ENABLED:
+            raise HTTPException(status_code=503, detail="إعادة الطلب المحمية غير مفعلة قبل تطبيق migration قاعدة البيانات")
     log_event(logger, logging.INFO, "scan_validation_succeeded", input_type=request.input_type, mode="authenticated", user_context="authenticated")
     try:
         result = await ScanService.process_authenticated_scan(
@@ -137,7 +146,10 @@ async def create_authenticated_scan(
             raw_input=raw_input,
             user_id=user_id,
             language=request.language,
+            idempotency_key=idempotency_key,
         )
+    except ScanIdempotencyConflictError:
+        raise HTTPException(status_code=409, detail="استُخدم مفتاح الطلب نفسه لمدخل مختلف؛ أرسل مفتاحًا جديدًا") from None
     except ScanPersistenceError:
         raise HTTPException(status_code=503, detail="تعذر حفظ نتيجة الفحص") from None
     return {"success": True, "data": result}
@@ -168,8 +180,12 @@ async def hide_scan(
         owned = supabase.table("scans").select("id").eq("id", scan_id).eq("user_id", user_id).is_("user_deleted_at", "null").limit(1).execute()
         if not owned.data:
             raise HTTPException(status_code=404, detail="الفحص غير موجود أو لا تملك صلاحية الوصول إليه")
-        result = supabase.table("scans").update({"user_hidden_at": datetime.now(timezone.utc).isoformat()}).eq("id", scan_id).eq("user_id", user_id).execute()
-        return {"success": True, "data": (result.data or [{"id": scan_id, "user_hidden_at": True}])[0]}
+        hidden_at = datetime.now(timezone.utc).isoformat()
+        supabase.table("scans").update({"user_hidden_at": hidden_at}).eq("id", scan_id).eq("user_id", user_id).execute()
+        confirmed = supabase.table("scans").select("id,user_hidden_at").eq("id", scan_id).eq("user_id", user_id).limit(1).execute()
+        if not confirmed.data or not confirmed.data[0].get("user_hidden_at"):
+            raise HTTPException(status_code=503, detail="تعذر تأكيد إخفاء الفحص")
+        return {"success": True, "data": confirmed.data[0], "meta": {"source": "SUPABASE_CONFIRMED"}}
     except HTTPException:
         raise
     except Exception:
@@ -186,8 +202,11 @@ async def unhide_scan(
         owned = supabase.table("scans").select("id").eq("id", scan_id).eq("user_id", user_id).is_("user_deleted_at", "null").limit(1).execute()
         if not owned.data:
             raise HTTPException(status_code=404, detail="الفحص غير موجود أو لا تملك صلاحية الوصول إليه")
-        result = supabase.table("scans").update({"user_hidden_at": None}).eq("id", scan_id).eq("user_id", user_id).execute()
-        return {"success": True, "data": (result.data or [{"id": scan_id, "user_hidden_at": None}])[0]}
+        supabase.table("scans").update({"user_hidden_at": None}).eq("id", scan_id).eq("user_id", user_id).execute()
+        confirmed = supabase.table("scans").select("id,user_hidden_at").eq("id", scan_id).eq("user_id", user_id).limit(1).execute()
+        if not confirmed.data or confirmed.data[0].get("user_hidden_at") is not None:
+            raise HTTPException(status_code=503, detail="تعذر تأكيد إظهار الفحص")
+        return {"success": True, "data": confirmed.data[0], "meta": {"source": "SUPABASE_CONFIRMED"}}
     except HTTPException:
         raise
     except Exception:
@@ -210,7 +229,10 @@ async def delete_scan(
         }).execute()
         if deleted.data is not True:
             raise HTTPException(status_code=404, detail="الفحص غير موجود أو لا تملك صلاحية الوصول إليه")
-        return {"success": True, "message": "تم حذف بيانات الفحص من سجلك", "data": {"id": scan_id, "user_deleted_at": now}}
+        confirmed = supabase.table("scans").select("id,user_deleted_at").eq("id", scan_id).eq("user_id", user_id).limit(1).execute()
+        if not confirmed.data or not confirmed.data[0].get("user_deleted_at"):
+            raise HTTPException(status_code=503, detail="تعذر تأكيد حذف الفحص من السجل")
+        return {"success": True, "message": "تم حذف بيانات الفحص من سجلك", "data": confirmed.data[0], "meta": {"source": "SUPABASE_CONFIRMED"}}
     except HTTPException:
         raise
     except Exception:

@@ -30,8 +30,11 @@ class Settings:
     ADMIN_LOGIN_RATE_LIMIT: int = int(os.getenv("ADMIN_LOGIN_RATE_LIMIT", "5"))
     ADMIN_IP_SALT: str = os.getenv("ADMIN_IP_SALT", "")
     VISITOR_HASH_SALT: str = os.getenv("VISITOR_HASH_SALT", "")
+    SCAN_ML_TIMEOUT_SECONDS: float = max(0.05, min(10.0, float(os.getenv("SCAN_ML_TIMEOUT_SECONDS", "2"))))
     SCAN_AI_TIMEOUT_SECONDS: float = float(os.getenv("SCAN_AI_TIMEOUT_SECONDS", "18"))
     SCAN_TOTAL_TIMEOUT_SECONDS: float = max(1.0, float(os.getenv("SCAN_TOTAL_TIMEOUT_SECONDS", "30")))
+    SCAN_METRIC_TIMEOUT_SECONDS: float = max(0.05, min(5.0, float(os.getenv("SCAN_METRIC_TIMEOUT_SECONDS", "0.5"))))
+    SCAN_IDEMPOTENCY_ENABLED: bool = os.getenv("SCAN_IDEMPOTENCY_ENABLED", "false").lower() in {"1", "true", "yes"}
     NABEH_TRUST_PROXY_HEADERS: bool = os.getenv("NABEH_TRUST_PROXY_HEADERS", "false").lower() in {"1", "true", "yes"}
     RATE_LIMIT_FAIL_CLOSED: bool = os.getenv("NABEH_RATE_LIMIT_FAIL_CLOSED", "true").lower() in {"1", "true", "yes"}
     RATE_LIMIT_SALT: str = os.getenv("NABEH_RATE_LIMIT_SALT", "")

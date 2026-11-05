@@ -106,8 +106,13 @@ def validate_gemini_payload(payload: Any, *, fallback: dict[str, Any]) -> dict[s
             "official_domain": "غير متاح",
             "lure_type": "غير محدد",
             "authenticity_status": "UNKNOWN",
+            "provider": "LOCAL_SCHEMA_FALLBACK",
+            "provider_status": "FALLBACK",
+            "fallback_reason": "SCHEMA_INVALID",
         }
-        return GeminiExplanation.model_validate(safe_fallback).model_dump()
+        result = GeminiExplanation.model_validate(safe_fallback).model_dump()
+        result.update({key: safe_fallback[key] for key in ("provider", "provider_status", "fallback_reason")})
+        return result
 
 
 def validate_gemini_sms_payload(payload: Any, *, fallback: dict[str, Any]) -> dict[str, Any]:
@@ -134,4 +139,6 @@ def validate_gemini_sms_payload(payload: Any, *, fallback: dict[str, Any]) -> di
         }
         result = GeminiSMSAnalysis.model_validate(safe_fallback).model_dump()
         result["provider"] = "LOCAL_SCHEMA_FALLBACK"
+        result["provider_status"] = "FALLBACK"
+        result["fallback_reason"] = "SCHEMA_INVALID"
         return result

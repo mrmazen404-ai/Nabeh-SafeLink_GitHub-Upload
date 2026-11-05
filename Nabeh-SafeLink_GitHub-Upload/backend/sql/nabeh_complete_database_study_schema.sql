@@ -208,6 +208,7 @@ create table if not exists public.scans (
   recommendation text,
   model_version_id uuid,
   request_id uuid,
+  idempotency_key_hash char(64),
   error_code text,
   analysis_snapshot jsonb,
   created_at timestamptz not null default now(),
@@ -232,6 +233,7 @@ alter table public.scans
   add column if not exists recommendation text,
   add column if not exists model_version_id uuid,
   add column if not exists request_id uuid,
+  add column if not exists idempotency_key_hash char(64),
   add column if not exists error_code text,
   add column if not exists analysis_snapshot jsonb,
   add column if not exists created_at timestamptz not null default now(),
@@ -284,6 +286,9 @@ create index if not exists idx_scans_status_created
 create index if not exists idx_scans_input_hash
   on public.scans (input_hash)
   where input_hash is not null;
+create unique index if not exists scans_user_idempotency_key_unique
+  on public.scans (user_id, idempotency_key_hash)
+  where idempotency_key_hash is not null;
 
 /* ================================================================
    5. ANALYSIS SIGNALS AND EXPLANATIONS
@@ -570,6 +575,7 @@ create table if not exists public.system_settings (
 
 create table if not exists public.support_requests (
   id uuid primary key default gen_random_uuid(),
+  ticket_id text not null unique default ('TK-' || upper(replace(gen_random_uuid()::text, '-', ''))),
   user_id uuid references public.custom_users(id) on delete set null,
   email text,
   subject text not null,

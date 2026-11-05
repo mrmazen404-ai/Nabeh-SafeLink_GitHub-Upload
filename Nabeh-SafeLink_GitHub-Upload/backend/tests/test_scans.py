@@ -22,8 +22,17 @@ def test_shortener_detection():
     assert is_shortener_url("https://www.google.com") is False
 
 
-def test_predict_url_inference():
-    res = predict_url("http://paypa1-secure-account-verification-login.com/update")
+def test_predict_url_inference(monkeypatch):
+    import app.ml.predictor as predictor
+
+    # The production default intentionally refuses serialized model artifacts.
+    # This test explicitly trusts the repository test artifact and resets the
+    # cached loader state so it does not depend on test execution order.
+    monkeypatch.setenv("NABEH_TRUST_MODEL_ARTIFACT", "true")
+    monkeypatch.setattr(predictor, "model_bundle", None)
+    monkeypatch.setattr(predictor, "_model_load_attempted", False)
+    monkeypatch.setattr(predictor, "_model_load_status", "NOT_CHECKED")
+    res = predictor.predict_url("http://paypa1-secure-account-verification-login.com/update")
     assert res["classification"] in ("SUSPICIOUS", "DANGEROUS")
 
     invalid_res = predict_url("not_a_valid_url")
