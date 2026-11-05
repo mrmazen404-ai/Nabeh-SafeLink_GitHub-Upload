@@ -1,8 +1,8 @@
 """Support and Contact Requests API router with Supabase persistence."""
 
 import logging
-import random
 from typing import Optional
+from uuid import uuid4
 
 from fastapi import APIRouter, Header, HTTPException
 from pydantic import BaseModel, EmailStr, Field
@@ -10,6 +10,7 @@ from pydantic import BaseModel, EmailStr, Field
 from app.auth.security import AuthSecurityError, get_authenticated_user
 from app.db.supabase_client import supabase
 from app.observability import log_event, mask_email
+from app.legal.terms_consent import require_latest_terms
 
 logger = logging.getLogger(__name__)
 
@@ -49,7 +50,7 @@ async def create_support_request(
 ):
     """Save a user contact/support ticket into Supabase database (Authenticated users only)."""
     user_id = _get_required_user_id(authorization)
-    ticket_id = f"TK-{random.randint(10000, 99999)}"
+    ticket_id = f"TK-{uuid4().hex.upper()}"
     recipient = mask_email(request.email)
 
     full_message = f"Request Type: {request.request_type}\nScan ID: {request.scan_id or 'N/A'}\n\nDetails:\n{request.details}"
@@ -60,6 +61,7 @@ async def create_support_request(
         "message": full_message,
         "status": "OPEN",
         "priority": "HIGH" if request.request_type == "inaccurate_result" else "NORMAL",
+        "ticket_id": ticket_id,
     }
     if user_id:
         support_data["user_id"] = user_id
@@ -75,8 +77,18 @@ async def create_support_request(
     )
 
     try:
-        saved = supabase.table("support_requests").insert(support_data).execute()
-        saved_record = (saved.data or [support_data])[0]
+        supabase.table("support_requests").insert(support_data).execute()
+        persisted = (
+            supabase.table("support_requests")
+            .select("id,ticket_id,email,subject,status,priority,created_at")
+            .eq("ticket_id", ticket_id)
+            .limit(1)
+            .execute()
+        )
+        if not persisted.data:
+            log_event(logger, logging.ERROR, "support_request_persistence_unconfirmed", ticket_id=ticket_id)
+            raise HTTPException(status_code=503, detail="تعذر تأكيد حفظ طلب الدعم حاليًا. حاول لاحقًا.")
+        saved_record = persisted.data[0]
         log_event(
             logger,
             logging.INFO,
@@ -90,10 +102,12 @@ async def create_support_request(
             "ticket_id": ticket_id,
             "message": "تم استلام رسالتك وحفظها بنجاح في قاعدة البيانات",
             "data": saved_record,
+            "meta": {"source": "SUPABASE_CONFIRMED"},
         }
+    except HTTPException:
+        raise
     except Exception as error:
         logger.warning("support_request_persistence_fallback ticket_id=%s error=%s", ticket_id, type(error).__name__)
         # Do not report success when the ticket was not persisted. Returning
         # 200 here creates a false support record and prevents safe retries.
         raise HTTPException(status_code=503, detail="تعذر حفظ طلب الدعم حاليًا. حاول لاحقًا.") from None
-from app.legal.terms_consent import require_latest_terms

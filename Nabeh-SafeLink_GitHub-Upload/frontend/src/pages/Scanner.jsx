@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import Header from '../components/Header';
-import { scanURL, getScans } from '../services/api';
+import { scanURL, getScans, SCAN_IDEMPOTENCY_ENABLED } from '../services/api';
 import LoadingScreen from '../components/LoadingScreen';
 import ResultScreen from '../components/ResultScreen';
 import {
@@ -22,6 +22,10 @@ const STATUS_CFG = {
   DANGEROUS: { icon: XCircleIcon, className: 'recent-dangerous' },
   UNKNOWN: { icon: HelpCircleIcon, className: 'recent-unknown' },
 };
+
+function createIdempotencyKey() {
+  return globalThis.crypto?.randomUUID?.() || `scan-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
 
 const API_ERROR_CODE_MAP = {
   INVALID_INPUT: 'SCAN_E_INPUT',
@@ -162,9 +166,11 @@ export default function Scanner({ initialUrl = '', onClearInitial, activeTab, se
   const [error, setError] = useState('');
   const [recentScans, setRecentScans] = useState([]);
   const inputRef = useRef(null);
+  const idempotencyRef = useRef(null);
 
   useEffect(() => {
     if (isGuest) {
+      idempotencyRef.current = null;
       setRecentScans([]);
       setResult(null);
       setUrl('');
@@ -206,10 +212,20 @@ export default function Scanner({ initialUrl = '', onClearInitial, activeTab, se
     setLoading(true);
     setResult(null);
 
+    const requestIdentity = `${scanType}\u0000${lang}\u0000${textToScan.trim()}`;
+    let idempotencyKey = null;
+    if (!isGuest && SCAN_IDEMPOTENCY_ENABLED) {
+      if (idempotencyRef.current?.identity !== requestIdentity) {
+        idempotencyRef.current = { identity: requestIdentity, key: createIdempotencyKey() };
+      }
+      idempotencyKey = idempotencyRef.current.key;
+    }
+
     try {
-      const response = await scanURL(textToScan.trim(), lang, isGuest, scanType);
+      const response = await scanURL(textToScan.trim(), lang, isGuest, scanType, idempotencyKey);
       if (response && response.success) {
         setResult(response.data);
+        if (idempotencyRef.current?.identity === requestIdentity) idempotencyRef.current = null;
         if (!isGuest) fetchScans();
       } else {
         setError(getSafeScanError(null, lang));

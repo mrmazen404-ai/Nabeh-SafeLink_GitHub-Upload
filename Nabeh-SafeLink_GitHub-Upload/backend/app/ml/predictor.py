@@ -1,9 +1,12 @@
 """Nabeh SafeLink ML URL predictor."""
 
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
 import os
 import re
 import math
 import json
+import threading
 import joblib
 from urllib.parse import urlsplit, unquote
 import pandas as pd
@@ -62,6 +65,13 @@ MODEL_PATH = RETRAINED_MODEL_PATH if os.path.exists(RETRAINED_MODEL_PATH) else O
 model_bundle = None
 _model_load_attempted = False
 _model_load_status = "NOT_CHECKED"
+_MAX_INFLIGHT_PREDICTIONS = 2
+_DEFAULT_PREDICTION_TIMEOUT_SECONDS = 2.0
+_PREDICTION_EXECUTOR = ThreadPoolExecutor(
+    max_workers=_MAX_INFLIGHT_PREDICTIONS,
+    thread_name_prefix="nabeh-predict",
+)
+_PREDICTION_SLOTS = threading.BoundedSemaphore(_MAX_INFLIGHT_PREDICTIONS)
 
 
 def _load_trusted_model():
@@ -409,6 +419,56 @@ def predict_url(url: str) -> dict:
             "confidence": 0.5,
             "source": "MODEL_ERROR",
         }
+
+
+async def predict_url_async(
+    url: str,
+    timeout: float = _DEFAULT_PREDICTION_TIMEOUT_SECONDS,
+    predictor_fn=None,
+) -> dict:
+    """Run synchronous inference without blocking the event loop.
+
+    At most ``_MAX_INFLIGHT_PREDICTIONS`` calls are submitted at once. A timed
+    out call keeps its slot until its worker actually finishes; Python cannot
+    safely terminate a running thread.
+    """
+    if not _PREDICTION_SLOTS.acquire(blocking=False):
+        return {
+            "classification": "UNKNOWN",
+            "confidence": 0.5,
+            "source": "MODEL_BUSY",
+        }
+
+    try:
+        worker_future = _PREDICTION_EXECUTOR.submit(predictor_fn or predict_url, url)
+    except Exception:
+        _PREDICTION_SLOTS.release()
+        return {
+            "classification": "UNKNOWN",
+            "confidence": 0.5,
+            "source": "MODEL_ERROR",
+        }
+
+    # Release only when the actual concurrent future is done, not when the
+    # awaiting coroutine times out or is cancelled.
+    worker_future.add_done_callback(lambda _: _PREDICTION_SLOTS.release())
+    try:
+        return await asyncio.wait_for(
+            asyncio.wrap_future(worker_future), timeout=max(0.0, float(timeout))
+        )
+    except asyncio.TimeoutError:
+        return {
+            "classification": "UNKNOWN",
+            "confidence": 0.5,
+            "source": "MODEL_TIMEOUT",
+        }
+    except Exception:
+        return {
+            "classification": "UNKNOWN",
+            "confidence": 0.5,
+            "source": "MODEL_ERROR",
+        }
+
 
 if __name__ == "__main__":
     test_urls = [

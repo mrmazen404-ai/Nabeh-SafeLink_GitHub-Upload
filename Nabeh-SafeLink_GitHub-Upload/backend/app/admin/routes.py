@@ -76,12 +76,14 @@ def _admin_by_email(email: str) -> dict | None:
 
 
 def _audit(admin_id: str | None, action: str, resource_type: str, resource_id: str | None, request: Request, before=None, after=None, target_user_id: str | None = None, target_scan_id: str | None = None):
+    audit_id = str(uuid4())
     request_id = request.headers.get("x-request-id")
     try:
         UUID(request_id) if request_id else None
     except ValueError:
         request_id = None
     supabase.table("admin_audit_logs").insert({
+        "id": audit_id,
         "admin_user_id": admin_id,
         "action": action,
         "resource_type": resource_type,
@@ -95,16 +97,23 @@ def _audit(admin_id: str | None, action: str, resource_type: str, resource_id: s
         "user_agent_hash": hash_value(request.headers.get("user-agent", "")),
         "request_id": request_id,
     }).execute()
+    confirmed = supabase.table("admin_audit_logs").select("id").eq("id", audit_id).limit(1).execute()
+    if not confirmed.data:
+        raise HTTPException(status_code=503, detail="تعذر تأكيد تسجيل إجراء الإدارة")
 
 
 def _user_notification(user_id: str, title: str, body: str, notification_type: str = "SYSTEM"):
     """Create an in-app notification; failures are allowed to surface to admins."""
-    return supabase.table("notifications").insert({
+    notification_id = str(uuid4())
+    supabase.table("notifications").insert({
+        "id": notification_id,
         "user_id": str(user_id),
         "type": notification_type,
         "title": title,
         "body": body,
     }).execute()
+    row = _confirmed_row("notifications", "id,user_id,type,title,created_at", [("id", notification_id)], "تعذر تأكيد حفظ التنبيه")
+    return row
 
 
 def _tokens(admin: dict, request: Request, token_family: str | None = None) -> dict:
@@ -214,6 +223,20 @@ def setup_2fa(http_request: Request, authorization: str | None = Header(None)):
 def _admin_by_id(admin_id: str) -> dict | None:
     result = supabase.table("admin_users").select("*").eq("id", admin_id).limit(1).execute()
     return result.data[0] if result.data else None
+
+
+def _confirmed_row(table_name: str, fields: str, filters: list[tuple[str, str]], detail: str) -> dict:
+    """Read database state after mutation; never return a client-derived substitute."""
+    try:
+        query = supabase.table(table_name).select(fields)
+        for column, value in filters:
+            query = query.eq(column, value)
+        result = query.limit(1).execute()
+    except Exception:
+        raise HTTPException(status_code=503, detail=detail) from None
+    if not result.data:
+        raise HTTPException(status_code=503, detail=detail)
+    return result.data[0]
 
 
 @router.post("/auth/2fa/confirm")
@@ -471,8 +494,20 @@ def update_user_status(
         raise HTTPException(status_code=409, detail="لا يمكن تغيير حالة مستخدم محذوف")
     if user["status"] == request.status:
         return {"success": True, "data": user, "changed": False}
-    updated = supabase.table("custom_users").update({"status": request.status}).eq("id", str(user_id)).execute()
-    data = (updated.data or [None])[0] or {**user, "status": request.status}
+    try:
+        supabase.table("custom_users").update({"status": request.status}).eq("id", str(user_id)).eq("status", user["status"]).execute()
+        data = _confirmed_row(
+            "custom_users",
+            "id,status,email,display_name",
+            [("id", str(user_id))],
+            "تعذر تأكيد تغيير حالة المستخدم",
+        )
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(status_code=503, detail="تعذر تغيير حالة المستخدم") from None
+    if data.get("status") != request.status:
+        raise HTTPException(status_code=409, detail="لم تتغير حالة المستخدم المطلوبة؛ أعد تحميل البيانات")
     _audit(
         str(admin["id"]),
         "ADMIN_USER_STATUS_CHANGED",
@@ -483,7 +518,7 @@ def update_user_status(
         after={"status": request.status, "reason": request.reason},
         target_user_id=str(user_id),
     )
-    return {"success": True, "data": data, "changed": True}
+    return {"success": True, "data": data, "changed": True, "meta": {"source": "SUPABASE_CONFIRMED"}}
 
 
 @router.get("/sessions")
@@ -729,10 +764,17 @@ def review_scan(
     snapshot = scan.get("analysis_snapshot") or {}
     if not isinstance(snapshot, dict): snapshot = {}
     snapshot["admin_review"] = {"reviewed_by": str(admin["id"]), "reason": request.reason, "reviewed_at": now().isoformat()}
-    updated = supabase.table("scans").update({"classification": request.classification, "analysis_snapshot": snapshot}).eq("id", str(scan_id)).execute()
-    data = (updated.data or [None])[0] or {**scan, "classification": request.classification}
+    try:
+        supabase.table("scans").update({"classification": request.classification, "analysis_snapshot": snapshot}).eq("id", str(scan_id)).execute()
+        data = _confirmed_row("scans", "id,classification,status,analysis_snapshot", [("id", str(scan_id))], "تعذر تأكيد مراجعة الفحص")
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(status_code=503, detail="تعذر تحديث مراجعة الفحص") from None
+    if data.get("classification") != request.classification:
+        raise HTTPException(status_code=409, detail="تغيرت نتيجة الفحص بالتزامن؛ أعد تحميل البيانات")
     _audit(str(admin["id"]), "ADMIN_SCAN_REVIEWED", "scan", str(scan_id), http_request, before=before, after={"classification": request.classification, "reason": request.reason}, target_scan_id=str(scan_id))
-    return {"success": True, "data": data}
+    return {"success": True, "data": data, "meta": {"source": "SUPABASE_CONFIRMED"}}
 
 
 @router.get("/feedback")
@@ -758,9 +800,17 @@ def update_feedback(
     row = result.data[0] if result.data else None
     if not row: raise HTTPException(status_code=404, detail="البلاغ غير موجود")
     payload = {"status": request.status, "reviewed_at": now().isoformat(), "reviewed_by_admin_id": str(admin["id"])}
-    updated = supabase.table("feedback").update(payload).eq("id", str(feedback_id)).execute()
+    try:
+        supabase.table("feedback").update(payload).eq("id", str(feedback_id)).execute()
+        saved = _confirmed_row("feedback", "id,status,scan_id", [("id", str(feedback_id))], "تعذر تأكيد تحديث البلاغ")
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(status_code=503, detail="تعذر تحديث البلاغ") from None
+    if saved.get("status") != request.status:
+        raise HTTPException(status_code=409, detail="لم تؤكد قاعدة البيانات حالة البلاغ المطلوبة")
     _audit(str(admin["id"]), "ADMIN_FEEDBACK_STATUS_CHANGED", "feedback", str(feedback_id), http_request, before={"status": row["status"]}, after={"status": request.status, "note": request.note}, target_scan_id=row.get("scan_id"))
-    return {"success": True, "data": (updated.data or [None])[0] or {**row, **payload}}
+    return {"success": True, "data": saved, "meta": {"source": "SUPABASE_CONFIRMED"}}
 
 
 @router.get("/support")
@@ -796,11 +846,24 @@ def update_support(
         payload["admin_reply"] = request.reply.strip()
         payload["replied_at"] = now().isoformat()
     if not payload: raise HTTPException(status_code=422, detail="لا يوجد تعديل")
-    updated = supabase.table("support_requests").update(payload).eq("id", str(support_id)).execute()
+    try:
+        supabase.table("support_requests").update(payload).eq("id", str(support_id)).execute()
+        saved = _confirmed_row(
+            "support_requests",
+            "id,status,priority,user_id,subject,admin_reply,replied_at,resolved_at,assigned_admin_id",
+            [("id", str(support_id))],
+            "تعذر تأكيد تحديث طلب الدعم",
+        )
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(status_code=503, detail="تعذر تحديث طلب الدعم") from None
+    if any(saved.get(key) != value for key, value in payload.items()):
+        raise HTTPException(status_code=409, detail="لم تؤكد قاعدة البيانات كامل تحديث طلب الدعم")
     if request.reply and request.reply.strip() and row.get("user_id"):
         _user_notification(str(row["user_id"]), f"رد على طلب الدعم: {row.get('subject') or ''}", request.reply.strip())
     _audit(str(admin["id"]), "ADMIN_SUPPORT_UPDATED", "support_request", str(support_id), http_request, before={"status": row.get("status"), "priority": row.get("priority")}, after={**payload, "note": request.note})
-    return {"success": True, "data": (updated.data or [None])[0] or {**row, **payload}}
+    return {"success": True, "data": saved, "meta": {"source": "SUPABASE_CONFIRMED"}}
 
 
 @router.post("/notifications/broadcast")
@@ -809,11 +872,23 @@ def broadcast_notification(request: BroadcastNotificationRequest, http_request: 
     if (count_result.count or 0) > 10000:
         raise HTTPException(status_code=413, detail="Broadcast audience exceeds the safe batch limit")
     users = supabase.table("custom_users").select("id").eq("status", "ACTIVE").limit(10000).execute().data or []
-    rows = [{"user_id": str(user["id"]), "type": "SYSTEM", "title": request.title.strip(), "body": request.body.strip()} for user in users]
+    rows = [{"id": str(uuid4()), "user_id": str(user["id"]), "type": "SYSTEM", "title": request.title.strip(), "body": request.body.strip()} for user in users]
+    confirmed_count = 0
     for start in range(0, len(rows), 500):
-        if rows[start:start + 500]: supabase.table("notifications").insert(rows[start:start + 500]).execute()
+        batch = rows[start:start + 500]
+        if not batch:
+            continue
+        try:
+            supabase.table("notifications").insert(batch).execute()
+            ids = [row["id"] for row in batch]
+            confirmed = supabase.table("notifications").select("id").in_("id", ids).execute()
+        except Exception:
+            raise HTTPException(status_code=503, detail="تعذر تأكيد إرسال جميع التنبيهات") from None
+        if len(confirmed.data or []) != len(batch):
+            raise HTTPException(status_code=503, detail="لم تؤكد قاعدة البيانات حفظ جميع التنبيهات")
+        confirmed_count += len(confirmed.data)
     _audit(str(admin["id"]), "ADMIN_NOTIFICATION_BROADCAST", "notification", None, http_request, after={"recipient_count": len(rows), "title": request.title.strip()})
-    return {"success": True, "data": {"recipient_count": len(rows)}}
+    return {"success": True, "data": {"recipient_count": confirmed_count}, "meta": {"source": "SUPABASE_CONFIRMED"}}
 
 
 @router.get("/deletion-requests")
@@ -848,11 +923,17 @@ def decide_deletion_request(
     payload = {"status": request.status, "processed_by_admin_id": str(admin["id"]), "decision_reason": request.reason}
     if request.status == "COMPLETED": payload["completed_at"] = now().isoformat()
     if request.status == "CANCELLED": payload["cancelled_at"] = now().isoformat()
-    updated = supabase.table("account_deletion_requests").update(payload).eq("id", str(request_id)).eq("status", row["status"]).select("id,status,user_id").execute()
-    if not updated.data:
+    try:
+        supabase.table("account_deletion_requests").update(payload).eq("id", str(request_id)).eq("status", row["status"]).execute()
+        saved = _confirmed_row("account_deletion_requests", "id,status,user_id", [("id", str(request_id))], "تعذر تأكيد تحديث طلب الحذف")
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(status_code=503, detail="تعذر تحديث طلب الحذف") from None
+    if saved.get("status") != request.status:
         raise HTTPException(status_code=409, detail="Deletion request changed concurrently")
     _audit(str(admin["id"]), "ADMIN_DELETION_REQUEST_DECIDED", "account_deletion_request", str(request_id), http_request, before={"status": row["status"]}, after={"status": request.status, "reason": request.reason}, target_user_id=row.get("user_id"))
-    return {"success": True, "data": (updated.data or [None])[0] or {**row, **payload}}
+    return {"success": True, "data": saved, "meta": {"source": "SUPABASE_CONFIRMED"}}
 
 
 @router.get("/statistics/overview")

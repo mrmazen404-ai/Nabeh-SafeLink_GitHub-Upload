@@ -59,7 +59,7 @@ CREATE TABLE public.scans (
   user_id uuid,
   input_type text NOT NULL CHECK (input_type = ANY (ARRAY['URL'::text, 'TEXT'::text, 'MESSAGE'::text, 'FILE'::text, 'EMAIL_HEADER'::text])),
   input_value_masked text,
-  input_hash character,
+  input_hash character(64),
   input_language character varying,
   status text NOT NULL DEFAULT 'PROCESSING'::text CHECK (status = ANY (ARRAY['PROCESSING'::text, 'COMPLETED'::text, 'FAILED'::text])),
   classification text CHECK (classification = ANY (ARRAY['SAFE'::text, 'SUSPICIOUS'::text, 'DANGEROUS'::text, 'UNKNOWN'::text, 'NEEDS_REVIEW'::text])),
@@ -68,6 +68,7 @@ CREATE TABLE public.scans (
   recommendation text,
   model_version_id uuid,
   request_id uuid,
+  idempotency_key_hash character(64),
   error_code text,
   created_at timestamp with time zone NOT NULL DEFAULT now(),
   completed_at timestamp with time zone,
@@ -78,6 +79,9 @@ CREATE TABLE public.scans (
   CONSTRAINT scans_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.custom_users(id),
   CONSTRAINT scans_model_version_id_fkey FOREIGN KEY (model_version_id) REFERENCES public.model_versions(id)
 );
+CREATE UNIQUE INDEX scans_user_idempotency_key_unique
+  ON public.scans (user_id, idempotency_key_hash)
+  WHERE idempotency_key_hash IS NOT NULL;
 CREATE TABLE public.scan_signals (
   id uuid NOT NULL DEFAULT gen_random_uuid(),
   scan_id uuid NOT NULL,
@@ -267,6 +271,7 @@ CREATE TABLE public.system_settings (
 );
 CREATE TABLE public.support_requests (
   id uuid NOT NULL DEFAULT gen_random_uuid(),
+  ticket_id text NOT NULL DEFAULT ('TK-'::text || upper(replace(gen_random_uuid()::text, '-'::text, ''::text))),
   user_id uuid,
   email text,
   subject text NOT NULL,
@@ -280,6 +285,7 @@ CREATE TABLE public.support_requests (
   admin_reply text,
   replied_at timestamp with time zone,
   CONSTRAINT support_requests_pkey PRIMARY KEY (id),
+  CONSTRAINT support_requests_ticket_id_key UNIQUE (ticket_id),
   CONSTRAINT support_requests_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.custom_users(id),
   CONSTRAINT support_requests_assigned_to_fkey FOREIGN KEY (assigned_to) REFERENCES public.custom_users(id),
   CONSTRAINT support_requests_assigned_admin_id_fkey FOREIGN KEY (assigned_admin_id) REFERENCES public.admin_users(id)

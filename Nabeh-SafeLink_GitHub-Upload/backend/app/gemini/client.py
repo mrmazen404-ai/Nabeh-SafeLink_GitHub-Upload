@@ -9,6 +9,7 @@ import asyncio
 import json
 import re
 import logging
+import threading
 from google import genai
 from google.genai import types
 from app.config import settings
@@ -20,6 +21,11 @@ client = None
 _client_api_key = None
 _last_provider_status = {"status": "not_attempted", "provider": None, "error_type": None, "error_code": None}
 logger = logging.getLogger(__name__)
+try:
+    _MAX_CONCURRENT_REQUESTS = max(1, min(32, int(os.getenv("GEMINI_MAX_CONCURRENT_REQUESTS", "4"))))
+except ValueError:
+    _MAX_CONCURRENT_REQUESTS = 4
+_GEMINI_REQUEST_SLOTS = threading.BoundedSemaphore(_MAX_CONCURRENT_REQUESTS)
 
 
 def _validated_model_result(
@@ -34,14 +40,28 @@ def _validated_model_result(
 ) -> dict:
     fallback = _local_explanation(classification, language, input_value=input_value, evidence=evidence)
     result = validate_gemini_payload(parsed, fallback=fallback)
+    if result.get("provider") == "LOCAL_SCHEMA_FALLBACK":
+        return result
     result = _sanitize_official_portal_url(result, input_value, input_value)
+    # Gemini supplies supporting prose only. The Fusion verdict is authoritative.
+    result["classification"] = classification
     result["provider"] = f"{provider} ({model_name})"
+    result["provider_status"] = "SUCCESS"
+    result["fallback_reason"] = None
     return result
 
 
 def _sanitized_local_explanation(classification: str, language: str, input_value: str, evidence: dict) -> dict:
     local = _local_explanation(classification, language, input_value=input_value, evidence=evidence)
     return _sanitize_official_portal_url(local, input_value, input_value)
+
+
+def _local_result_status(result: dict, reason: str, *, truncated: bool = False) -> dict:
+    result["provider"] = "LOCAL_RULES"
+    result["provider_status"] = "FALLBACK"
+    result["fallback_reason"] = reason
+    result["input_truncated"] = truncated
+    return result
 
 
 def _get_api_key() -> str:
@@ -153,19 +173,18 @@ Do not invent sources, official domains, scan results, confidence percentages, o
 """
 
 
-async def generate_explanation(
+async def _generate_explanation_unlimited(
     input_value: str,
     classification: str,
     language: str = "ar",
     evidence: dict | None = None,
 ) -> dict:
-    """
-    Generates structured AI explanation asynchronously with real-time web intelligence.
-    Employs a resilient multi-tier model fallback ladder with zero-downtime local fallback.
-    """
+    """Generate supporting explanation; Fusion remains the sole URL verdict source."""
     lang_name = "Arabic" if language == "ar" else "English"
     evidence = evidence or {}
-    untrusted_url_json = json.dumps({"url": (input_value or "")[:300]}, ensure_ascii=False)
+    raw_url = input_value or ""
+    input_truncated = len(raw_url) > 300
+    untrusted_url_json = json.dumps({"url": raw_url[:300]}, ensure_ascii=False)
     operation_id = resource_id(input_value)
     log_event(logger, logging.INFO, "scan_gemini_started", operation_id=operation_id, classification=classification, language=language)
     ml_evidence = evidence.get("ml", {})
@@ -193,17 +212,17 @@ Requested Explanation Language: {lang_name}
 Evidence Data:
 {json.dumps(safe_evidence, ensure_ascii=False)}
 
-Cybersecurity Research Instructions:
-1. Search and identify the true official registered domain for any organization or brand mentioned or impersonated in the input URL.
-2. Compare the input URL's domain against the official domain and highlight any discrepancies, typosquatting, or spoofing.
-3. Analyze deceptive URL structure, the categorical ML signal, and available VirusTotal engine findings.
-4. Do not alter the Primary Security Classification.
+Cybersecurity Explanation Instructions:
+1. Do not make official-domain, official-portal, ownership, or verification claims; no independently verified claim evidence is supplied.
+2. Analyze URL structure and the supplied ML/VirusTotal signals only. Do not invent sources, citations, scan results, or domain facts.
+3. Explain uncertainty and do not alter the Primary Security Classification.
+4. The classification field must exactly repeat the Primary Security Classification; the Fusion verdict is authoritative.
 
 Respond ONLY in valid JSON matching this exact structure:
 {{
   "classification": "SAFE|SUSPICIOUS|DANGEROUS|UNKNOWN",
   "summary": "Clear 1-2 sentence summary explaining the security research findings in {lang_name}",
-  "reasons": ["Key technical reason 1 comparing official domain vs URL in {lang_name}", "Key technical reason 2 in {lang_name}", "Key technical reason 3 in {lang_name}"],
+  "reasons": ["Key technical reason 1 based only on supplied evidence in {lang_name}", "Key technical reason 2 in {lang_name}", "Key technical reason 3 in {lang_name}"],
   "recommendation": "Practical actionable security advice in {lang_name}",
   "limitations": []
 }}
@@ -211,110 +230,99 @@ Respond ONLY in valid JSON matching this exact structure:
 
     current_key = _get_api_key()
     if not current_key:
+        reason = "GEMINI_API_KEY_MISSING"
         _set_provider_status("not_configured")
-        log_event(logger, logging.WARNING, "scan_gemini_fallback_selected", operation_id=operation_id, provider="LOCAL_RULES", fallback_reason="GEMINI_API_KEY_MISSING")
-        return _sanitized_local_explanation(classification, language, input_value, evidence)
+        log_event(logger, logging.WARNING, "scan_gemini_fallback_selected", operation_id=operation_id, provider="LOCAL_RULES", fallback_reason=reason)
+        return _local_result_status(_sanitized_local_explanation(classification, language, input_value, evidence), reason, truncated=input_truncated)
 
     gemini_client = _get_client()
     if gemini_client is None:
+        reason = "CLIENT_UNAVAILABLE"
         _set_provider_status("unavailable")
-        log_event(logger, logging.WARNING, "scan_gemini_fallback_selected", operation_id=operation_id, provider="LOCAL_RULES", fallback_reason="CLIENT_UNAVAILABLE")
-        return _sanitized_local_explanation(classification, language, input_value, evidence)
+        log_event(logger, logging.WARNING, "scan_gemini_fallback_selected", operation_id=operation_id, provider="LOCAL_RULES", fallback_reason=reason)
+        return _local_result_status(_sanitized_local_explanation(classification, language, input_value, evidence), reason, truncated=input_truncated)
 
-    # Multi-tier model fallback cascade: iterates through every model until a successful response
+    last_failure_reason = "ALL_MODELS_FAILED"
     for model_name in PRIMARY_MODELS:
-        _set_provider_status("attempting")
-        log_event(logger, logging.INFO, "scan_gemini_attempt_started", operation_id=operation_id, model=model_name, mode="search")
-
-        # Mode 1: Search Grounded Generation
-        try:
-            response = await _generate_content_with_rate_limit_retry(
-                gemini_client, model=model_name, contents=prompt, operation_id=operation_id,
-                config=types.GenerateContentConfig(
-                    system_instruction=SYSTEM_INSTRUCTION,
-                    tools=[types.Tool(google_search=types.GoogleSearch())],
-                    temperature=0.2,
-                )
-            )
-            text = response.text.strip() if response.text else ""
-            text_clean = re.sub(r'^```json\s*', '', text)
-            text_clean = re.sub(r'\s*```$', '', text_clean)
-
-            parsed = json.loads(text_clean)
-            result = _validated_model_result(
-                parsed,
-                model_name=model_name,
-                provider="GEMINI_SEARCH",
-                classification=classification,
-                language=language,
-                input_value=input_value,
-                evidence=evidence,
-            )
-            log_event(logger, logging.INFO, "scan_gemini_attempt_succeeded", operation_id=operation_id, model=model_name, mode="search")
-            _set_provider_status("ready", "GEMINI_SEARCH")
-            return result
-        except Exception as error:
-            _set_provider_status("failed", error=error)
-            log_event(logger, logging.WARNING, "scan_gemini_attempt_failed", operation_id=operation_id, mode="search", error_type=safe_error(error))
-            # Fall through to Mode 2 (Standard JSON Generation) if Search Grounding tool fails
-
-
-
-
-        # Mode 2: Standard Gemini JSON Generation
-        try:
-            response = await _generate_content_with_rate_limit_retry(
-                gemini_client, model=model_name, contents=prompt, operation_id=operation_id,
-                config=types.GenerateContentConfig(
-                    system_instruction=SYSTEM_INSTRUCTION,
-                    response_mime_type="application/json",
-                    temperature=0.2,
-                )
-            )
-
-            text = response.text.strip() if response.text else ""
-            text_clean = re.sub(r'^```json\s*', '', text)
-            text_clean = re.sub(r'\s*```$', '', text_clean)
-
+        for mode in ("search", "json"):
+            _set_provider_status("attempting")
+            log_event(logger, logging.INFO, "scan_gemini_attempt_started", operation_id=operation_id, model=model_name, mode=mode)
             try:
-                parsed = json.loads(text_clean)
+                config = types.GenerateContentConfig(
+                    system_instruction=SYSTEM_INSTRUCTION,
+                    tools=[types.Tool(google_search=types.GoogleSearch())] if mode == "search" else None,
+                    response_mime_type="application/json" if mode == "json" else None,
+                    temperature=0.2,
+                )
+                response = await _generate_content_with_rate_limit_retry(
+                    gemini_client, model=model_name, contents=prompt, config=config, operation_id=operation_id,
+                )
+                text = response.text.strip() if response.text else ""
+                text_clean = re.sub(r'^```json\s*', '', text)
+                text_clean = re.sub(r'\s*```$', '', text_clean)
+                try:
+                    parsed = json.loads(text_clean)
+                except (json.JSONDecodeError, TypeError):
+                    last_failure_reason = "NON_JSON_RESPONSE"
+                    _set_provider_status("failed")
+                    log_event(logger, logging.WARNING, "scan_gemini_attempt_failed", operation_id=operation_id, model=model_name, mode=mode, error_type="NON_JSON_RESPONSE")
+                    continue
+
                 result = _validated_model_result(
                     parsed,
                     model_name=model_name,
-                    provider="GEMINI",
+                    provider="GEMINI_SEARCH" if mode == "search" else "GEMINI",
                     classification=classification,
                     language=language,
                     input_value=input_value,
                     evidence=evidence,
                 )
-                log_event(logger, logging.INFO, "scan_gemini_attempt_succeeded", operation_id=operation_id, model=model_name, mode="json")
-                _set_provider_status("ready", "GEMINI")
+                if result.get("provider") == "LOCAL_SCHEMA_FALLBACK":
+                    last_failure_reason = "SCHEMA_INVALID"
+                    log_event(logger, logging.WARNING, "scan_gemini_schema_validation_failed", operation_id=operation_id, model=model_name, mode=mode)
+                    continue
+                result["input_truncated"] = input_truncated
+                log_event(logger, logging.INFO, "scan_gemini_attempt_succeeded", operation_id=operation_id, model=model_name, mode=mode)
+                _set_provider_status("ready", "GEMINI_SEARCH" if mode == "search" else "GEMINI")
                 return result
-            except json.JSONDecodeError:
-                if text:
-                    result = _validated_model_result(
-                        {"summary": text[:300], "recommendation": _default_rec(classification, language)},
-                        model_name=model_name,
-                        provider="GEMINI",
-                        classification=classification,
-                        language=language,
-                        input_value=input_value,
-                        evidence=evidence,
-                    )
-                    log_event(logger, logging.INFO, "scan_gemini_attempt_succeeded", operation_id=operation_id, model=model_name, mode="text_fallback")
-                    _set_provider_status("ready", "GEMINI")
-                    return result
+            except Exception as error:
+                last_failure_reason = "PROVIDER_ERROR"
+                _set_provider_status("failed", error=error)
+                log_event(logger, logging.WARNING, "scan_gemini_attempt_failed", operation_id=operation_id, model=model_name, mode=mode, error_type=safe_error(error))
+                if _is_rate_limited_error(error):
+                    last_failure_reason = "RATE_LIMITED"
+                    log_event(logger, logging.WARNING, "scan_gemini_rate_limited", operation_id=operation_id)
+                    break
 
-        except Exception as e:
-            _set_provider_status("failed", error=e)
-            log_event(logger, logging.WARNING, "scan_gemini_attempt_failed", operation_id=operation_id, model=model_name, error_type=safe_error(e))
-            if _is_rate_limited_error(e):
-                log_event(logger, logging.WARNING, "scan_gemini_rate_limited", operation_id=operation_id)
-                break
-            continue
+    log_event(logger, logging.WARNING, "scan_gemini_fallback_selected", operation_id=operation_id, provider="LOCAL_RULES", fallback_reason=last_failure_reason)
+    _set_provider_status("fallback", "LOCAL_RULES")
+    return _local_result_status(_sanitized_local_explanation(classification, language, input_value, evidence), last_failure_reason, truncated=input_truncated)
 
-    log_event(logger, logging.WARNING, "scan_gemini_fallback_selected", operation_id=operation_id, provider="LOCAL_RULES", fallback_reason="ALL_MODELS_FAILED")
-    return _sanitized_local_explanation(classification, language, input_value, evidence)
+
+async def generate_explanation(
+    input_value: str,
+    classification: str,
+    language: str = "ar",
+    evidence: dict | None = None,
+) -> dict:
+    """Bound concurrent Gemini use; a busy provider produces an explicit local fallback."""
+    if not _GEMINI_REQUEST_SLOTS.acquire(blocking=False):
+        reason = "GEMINI_CAPACITY_LIMITED"
+        _set_provider_status("busy", "LOCAL_RULES")
+        return _local_result_status(
+            _sanitized_local_explanation(classification, language, input_value, evidence or {}),
+            reason,
+            truncated=len(input_value or "") > 300,
+        )
+    try:
+        return await _generate_explanation_unlimited(
+            input_value=input_value,
+            classification=classification,
+            language=language,
+            evidence=evidence,
+        )
+    finally:
+        _GEMINI_REQUEST_SLOTS.release()
 
 
 SMS_SYSTEM_INSTRUCTION = """
@@ -333,7 +341,7 @@ Rules:
 """
 
 
-async def analyze_sms_message(
+async def _analyze_sms_message_unlimited(
     text_content: str,
     extracted_url: str = "",
     evidence: dict | None = None,
@@ -349,6 +357,7 @@ async def analyze_sms_message(
     operation_id = resource_id(text_content)
     log_event(logger, logging.INFO, "gemini_sms_analysis_started", operation_id=operation_id, language=language)
     local_fallback = _local_sms_analysis(text_content, extracted_url, language, evidence)
+    input_truncated = len(text_content or "") > 600 or len(extracted_url or "") > 2048
     input_data = json.dumps({
         "sms_text": (text_content or "")[:600],
         "extracted_url": (extracted_url or "")[:2048],
@@ -382,10 +391,13 @@ Do not return probability, confidence, or numeric risk scores.
 
     current_key = _get_api_key()
     gemini_client = _get_client() if current_key else None
+    last_failure_reason = "ALL_MODELS_FAILED"
 
     if not current_key:
+        last_failure_reason = "GEMINI_API_KEY_MISSING"
         _set_provider_status("not_configured")
     elif gemini_client is None:
+        last_failure_reason = "CLIENT_UNAVAILABLE"
         _set_provider_status("unavailable")
 
     if gemini_client:
@@ -410,14 +422,19 @@ Do not return probability, confidence, or numeric risk scores.
 
                 parsed = validate_gemini_sms_payload(json.loads(text_clean), fallback=local_fallback)
                 if parsed.get("provider") == "LOCAL_SCHEMA_FALLBACK":
+                    last_failure_reason = "SCHEMA_INVALID"
                     log_event(logger, logging.WARNING, "gemini_sms_schema_validation_failed", operation_id=operation_id, model=model_name, mode="search")
                     continue
                 parsed["provider"] = f"GEMINI_SEARCH ({model_name})"
+                parsed["provider_status"] = "SUCCESS"
+                parsed["fallback_reason"] = None
+                parsed["input_truncated"] = input_truncated
                 parsed = _sanitize_official_portal_url(parsed, text_content, extracted_url, language)
                 log_event(logger, logging.INFO, "gemini_sms_analysis_succeeded", operation_id=operation_id, model=model_name, mode="search")
                 _set_provider_status("ready", "GEMINI_SEARCH")
                 return parsed
             except Exception as error:
+                last_failure_reason = "NON_JSON_RESPONSE" if isinstance(error, (json.JSONDecodeError, TypeError)) else "PROVIDER_ERROR"
                 _set_provider_status("failed", error=error)
                 log_event(logger, logging.WARNING, "gemini_sms_search_attempt_failed", operation_id=operation_id, model=model_name, error_type=safe_error(error))
                 # Fall through to Mode 2 (Standard JSON Generation)
@@ -444,23 +461,62 @@ Do not return probability, confidence, or numeric risk scores.
 
                 parsed = validate_gemini_sms_payload(json.loads(text_clean), fallback=local_fallback)
                 if parsed.get("provider") == "LOCAL_SCHEMA_FALLBACK":
+                    last_failure_reason = "SCHEMA_INVALID"
                     log_event(logger, logging.WARNING, "gemini_sms_schema_validation_failed", operation_id=operation_id, model=model_name, mode="json")
                     continue
                 parsed["provider"] = f"GEMINI_AI ({model_name})"
+                parsed["provider_status"] = "SUCCESS"
+                parsed["fallback_reason"] = None
+                parsed["input_truncated"] = input_truncated
                 parsed = _sanitize_official_portal_url(parsed, text_content, extracted_url, language)
                 log_event(logger, logging.INFO, "gemini_sms_analysis_succeeded", operation_id=operation_id, model=model_name, mode="json")
                 _set_provider_status("ready", "GEMINI")
                 return parsed
             except Exception as error:
+                last_failure_reason = "NON_JSON_RESPONSE" if isinstance(error, (json.JSONDecodeError, TypeError)) else "PROVIDER_ERROR"
                 _set_provider_status("failed", error=error)
                 log_event(logger, logging.WARNING, "gemini_sms_json_attempt_failed", operation_id=operation_id, model=model_name, error_type=safe_error(error))
                 if _is_rate_limited_error(error):
+                    last_failure_reason = "RATE_LIMITED"
                     log_event(logger, logging.WARNING, "gemini_sms_rate_limited_fallback", operation_id=operation_id)
                     break
                 continue
 
     local_fallback["provider"] = "LOCAL_AI_RULES"
+    local_fallback["provider_status"] = "FALLBACK"
+    local_fallback["fallback_reason"] = last_failure_reason
+    local_fallback["input_truncated"] = input_truncated
+    if last_failure_reason not in {"GEMINI_API_KEY_MISSING", "CLIENT_UNAVAILABLE"}:
+        _set_provider_status("fallback", "LOCAL_AI_RULES")
     return _sanitize_official_portal_url(local_fallback, text_content, extracted_url, language)
+
+
+async def analyze_sms_message(
+    text_content: str,
+    extracted_url: str = "",
+    evidence: dict | None = None,
+    language: str = "ar",
+) -> dict:
+    """Bound concurrent SMS analyses and mark capacity fallbacks explicitly."""
+    if not _GEMINI_REQUEST_SLOTS.acquire(blocking=False):
+        _set_provider_status("busy", "LOCAL_AI_RULES")
+        fallback = _local_sms_analysis(text_content, extracted_url, language, evidence or {})
+        fallback.update({
+            "provider": "LOCAL_AI_RULES",
+            "provider_status": "FALLBACK",
+            "fallback_reason": "GEMINI_CAPACITY_LIMITED",
+            "input_truncated": len(text_content or "") > 600 or len(extracted_url or "") > 2048,
+        })
+        return _sanitize_official_portal_url(fallback, text_content, extracted_url, language)
+    try:
+        return await _analyze_sms_message_unlimited(
+            text_content=text_content,
+            extracted_url=extracted_url,
+            evidence=evidence,
+            language=language,
+        )
+    finally:
+        _GEMINI_REQUEST_SLOTS.release()
 
 
 def _matched_known_brand_domain(text_content: str, extracted_url: str) -> str | None:

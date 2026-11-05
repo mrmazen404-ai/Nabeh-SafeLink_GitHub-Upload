@@ -5,6 +5,7 @@ from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Query
 
+from app.config import settings
 from app.db.supabase_client import supabase
 
 logger = logging.getLogger(__name__)
@@ -93,7 +94,27 @@ Do not open a link solely because it was classified as safe, and verify the orga
 }
 
 
-def _get_policy(policy_type: str, language: str) -> dict:
+def _production_requires_database_policy() -> bool:
+    return settings.ENVIRONMENT in {"production", "staging"}
+
+
+def _embedded_policy(policy_type: str, language: str) -> dict:
+    lang_key = "ar" if language == "ar" else "en"
+    default_doc = DEFAULT_POLICIES.get(policy_type, {}).get(lang_key)
+    if not default_doc:
+        raise HTTPException(status_code=404, detail="الوثيقة القانونية غير متاحة")
+    return {
+        "id": f"default-{policy_type.lower()}-{lang_key}",
+        "policy_type": policy_type,
+        "language": lang_key,
+        "version": default_doc["version"],
+        "title": default_doc["title"],
+        "content_markdown": default_doc["content_markdown"],
+        "published_at": None,
+    }
+
+
+def _get_policy(policy_type: str, language: str) -> tuple[dict, str]:
     try:
         result = (
             supabase.table("policy_documents")
@@ -106,24 +127,13 @@ def _get_policy(policy_type: str, language: str) -> dict:
             .execute()
         )
         if result.data:
-            return result.data[0]
+            return result.data[0], "SUPABASE_CONFIRMED"
     except Exception as error:
         logger.warning("policy_documents_db_query_fallback policy_type=%s lang=%s error=%s", policy_type, language, type(error).__name__)
 
-    lang_key = "ar" if language == "ar" else "en"
-    default_doc = DEFAULT_POLICIES.get(policy_type, {}).get(lang_key)
-    if default_doc:
-        return {
-            "id": f"default-{policy_type.lower()}-{lang_key}",
-            "policy_type": policy_type,
-            "language": lang_key,
-            "version": default_doc["version"],
-            "title": default_doc["title"],
-            "content_markdown": default_doc["content_markdown"],
-            "published_at": None,
-        }
-
-    raise HTTPException(status_code=404, detail="الوثيقة القانونية غير متاحة")
+    if _production_requires_database_policy():
+        raise HTTPException(status_code=503, detail="الوثيقة القانونية المنشورة غير متاحة مؤقتًا")
+    return _embedded_policy(policy_type, language), "EMBEDDED_DEVELOPMENT_FALLBACK"
 
 
 @router.get("/{policy_type}")
@@ -131,7 +141,8 @@ async def get_policy(
     policy_type: PolicyType,
     language: str = Query("ar", pattern="^(ar|en)$"),
 ):
-    return {"success": True, "data": _get_policy(policy_type, language)}
+    document, source = _get_policy(policy_type, language)
+    return {"success": True, "data": document, "meta": {"source": source}}
 
 
 @router.get("")
@@ -146,14 +157,27 @@ async def get_active_policies(language: str = Query("ar", pattern="^(ar|en)$")):
             .order("policy_type")
             .execute()
         )
-        if result.data:
-            return {"success": True, "data": result.data}
-    except Exception:
-        pass
+        documents = result.data or []
+    except Exception as error:
+        logger.warning("active_policy_documents_query_failed error=%s", type(error).__name__)
+        if _production_requires_database_policy():
+            raise HTTPException(status_code=503, detail="الوثائق القانونية المنشورة غير متاحة مؤقتًا") from None
+        documents = []
 
-    fallback_docs = [
-        _get_policy("TERMS", lang_key),
-        _get_policy("PRIVACY", lang_key),
-        _get_policy("DISCLAIMER", lang_key),
-    ]
-    return {"success": True, "data": fallback_docs}
+    required_types = set(DEFAULT_POLICIES)
+    present_types = {item.get("policy_type") for item in documents}
+    missing_types = sorted(required_types - present_types)
+    if not missing_types:
+        return {"success": True, "data": documents, "meta": {"source": "SUPABASE_CONFIRMED"}}
+    if _production_requires_database_policy():
+        raise HTTPException(status_code=503, detail="بعض الوثائق القانونية المنشورة غير متاحة مؤقتًا")
+
+    fallback_docs = [_embedded_policy(policy_type, lang_key) for policy_type in missing_types]
+    return {
+        "success": True,
+        "data": documents + fallback_docs,
+        "meta": {
+            "source": "EMBEDDED_DEVELOPMENT_FALLBACK" if not documents else "MIXED_DEVELOPMENT_FALLBACK",
+            "missing_policies": missing_types,
+        },
+    }

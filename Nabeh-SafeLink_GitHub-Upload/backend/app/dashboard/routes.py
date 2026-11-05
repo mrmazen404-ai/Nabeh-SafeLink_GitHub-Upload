@@ -8,6 +8,7 @@ import logging
 import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Literal, Optional
+from uuid import uuid4
 
 from fastapi import APIRouter, Header, HTTPException, Query, Response, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field
@@ -157,6 +158,22 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _confirmed_row(table_name: str, fields: str, filters: list[tuple[str, str]], detail: str) -> dict:
+    """Read a row back after a mutation; never synthesize a persisted response."""
+    try:
+        query = supabase.table(table_name).select(fields)
+        for column, value in filters:
+            query = query.eq(column, value)
+        result = query.limit(1).execute()
+    except Exception:
+        log_event(logger, logging.ERROR, "database_write_confirmation_failed", table=table_name)
+        raise HTTPException(status_code=503, detail=detail) from None
+    if not result.data:
+        log_event(logger, logging.ERROR, "database_write_confirmation_missing", table=table_name)
+        raise HTTPException(status_code=503, detail=detail)
+    return result.data[0]
+
+
 def _load_profile(user_id: str) -> dict:
     result = supabase.table("user_profiles").select(
         "user_id,display_name,preferred_language,timezone,avatar_path,created_at,updated_at"
@@ -287,19 +304,42 @@ async def update_profile(payload: ProfileUpdate, response: Response, authorizati
         user_update["preferred_language"] = payload.preferred_language
     if user_update:
         user_update["updated_at"] = _now()
-        supabase.table("custom_users").update(user_update).eq("id", user_id).execute()
-    profile = _load_profile(user_id)
-    profile_payload = {
-        "user_id": user_id,
-        "display_name": payload.display_name or profile.get("display_name") or user.get("display_name") or user["email"].split("@", 1)[0],
-        "preferred_language": payload.preferred_language or profile.get("preferred_language") or user.get("preferred_language", "ar"),
-        "timezone": payload.timezone if payload.timezone is not None else profile.get("timezone"),
-        "updated_at": _now(),
-    }
-    supabase.table("user_profiles").upsert(profile_payload, on_conflict="user_id").execute()
-    refreshed = {**user, **user_update}
+        try:
+            supabase.table("custom_users").update(user_update).eq("id", user_id).execute()
+        except Exception:
+            raise HTTPException(status_code=503, detail="تعذر حفظ بيانات الحساب") from None
+    try:
+        profile = _load_profile(user_id)
+        profile_payload = {
+            "user_id": user_id,
+            "display_name": (payload.display_name.strip() if payload.display_name is not None else None) or profile.get("display_name") or user.get("display_name") or user["email"].split("@", 1)[0],
+            "preferred_language": payload.preferred_language or profile.get("preferred_language") or user.get("preferred_language", "ar"),
+            "timezone": payload.timezone if payload.timezone is not None else profile.get("timezone"),
+            "updated_at": _now(),
+        }
+        supabase.table("user_profiles").upsert(profile_payload, on_conflict="user_id").execute()
+        confirmed_profile = _confirmed_row(
+            "user_profiles",
+            "user_id,display_name,preferred_language,timezone,avatar_path,created_at,updated_at",
+            [("user_id", user_id)],
+            "تعذر تأكيد حفظ الملف الشخصي",
+        )
+        refreshed_user = _confirmed_row(
+            "custom_users",
+            "id,email,display_name,role,status,email_verified,preferred_language,created_at,last_login_at",
+            [("id", user_id)],
+            "تعذر تأكيد بيانات الحساب",
+        )
+        if any(refreshed_user.get(key) != value for key, value in user_update.items() if key != "updated_at"):
+            raise HTTPException(status_code=503, detail="لم تؤكد قاعدة البيانات تحديث بيانات الحساب")
+        if any(confirmed_profile.get(key) != profile_payload.get(key) for key in ("display_name", "preferred_language", "timezone")):
+            raise HTTPException(status_code=503, detail="لم تؤكد قاعدة البيانات تحديث الملف الشخصي")
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(status_code=503, detail="تعذر حفظ بيانات الملف الشخصي") from None
     log_event(logger, logging.INFO, "profile_updated", recipient=mask_email(user["email"]))
-    return {"success": True, "data": _user_public(refreshed, profile_payload)}
+    return {"success": True, "data": _user_public(refreshed_user, confirmed_profile), "meta": {"source": "SUPABASE_CONFIRMED"}}
 
 
 @router.get("/notifications")
@@ -314,11 +354,19 @@ async def get_notifications(response: Response, authorization: Optional[str] = H
 @router.post("/notifications/read-all")
 async def mark_notifications_read(response: Response, authorization: Optional[str] = Header(None)):
     user = _require_user(authorization)
-    supabase.table("notifications").update({"is_read": True, "read_at": _now()}).eq(
-        "user_id", str(user["id"])
-    ).eq("is_read", False).execute()
+    try:
+        updated = supabase.table("notifications").update({"is_read": True, "read_at": _now()}).eq(
+            "user_id", str(user["id"])
+        ).eq("is_read", False).select("id").execute()
+        unread = supabase.table("notifications").select("id", count="exact", head=True).eq(
+            "user_id", str(user["id"])
+        ).eq("is_read", False).execute()
+    except Exception:
+        raise HTTPException(status_code=503, detail="تعذر تأكيد تحديث التنبيهات") from None
+    if unread.count is None:
+        raise HTTPException(status_code=503, detail="تعذر تأكيد حالة التنبيهات")
     log_event(logger, logging.INFO, "notifications_marked_read")
-    return {"success": True}
+    return {"success": True, "data": {"marked_count": len(updated.data or []), "unread_remaining": unread.count}, "meta": {"source": "SUPABASE_CONFIRMED"}}
 
 
 @router.post("/security/change-password")
@@ -360,9 +408,11 @@ async def get_notification_preferences(response: Response, authorization: Option
     ).eq("user_id", str(user["id"])).limit(1).execute()
     if result.data:
         data = result.data[0]
+        source = "SUPABASE_CONFIRMED"
     else:
         data = {"user_id": str(user["id"]), "in_app_enabled": True, "email_enabled": False, "dangerous_scan_enabled": True, "weekly_summary_enabled": False}
-    return {"success": True, "data": data}
+        source = "DEFAULT_NOT_PERSISTED"
+    return {"success": True, "data": data, "meta": {"source": source}}
 
 
 @router.patch("/notification-preferences")
@@ -372,9 +422,22 @@ async def update_notification_preferences(payload: PreferenceUpdate, response: R
     if not updates:
         return await get_notification_preferences(response, authorization)
     updates.update({"user_id": str(user["id"]), "updated_at": _now()})
-    result = supabase.table("notification_preferences").upsert(updates, on_conflict="user_id").execute()
+    try:
+        supabase.table("notification_preferences").upsert(updates, on_conflict="user_id").execute()
+        data = _confirmed_row(
+            "notification_preferences",
+            "user_id,in_app_enabled,email_enabled,dangerous_scan_enabled,weekly_summary_enabled,updated_at",
+            [("user_id", str(user["id"]))],
+            "تعذر تأكيد حفظ تفضيلات الإشعارات",
+        )
+        if any(data.get(key) != value for key, value in updates.items() if key not in {"user_id", "updated_at"}):
+            raise HTTPException(status_code=503, detail="لم تؤكد قاعدة البيانات تطبيق تفضيلات الإشعارات المطلوبة")
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(status_code=503, detail="تعذر حفظ تفضيلات الإشعارات") from None
     log_event(logger, logging.INFO, "notification_preferences_updated")
-    return {"success": True, "data": (result.data or [updates])[0]}
+    return {"success": True, "data": data, "meta": {"source": "SUPABASE_CONFIRMED"}}
 
 
 @router.get("/privacy/consents")
@@ -391,9 +454,22 @@ async def update_privacy_consent(payload: ConsentUpdate, response: Response, aut
     user = _require_user(authorization)
     user_id = str(user["id"])
     row = {"user_id": user_id, "consent_type": payload.consent_type, "version": payload.version, "granted": payload.granted, "granted_at": _now(), "revoked_at": None if payload.granted else _now()}
-    result = supabase.table("privacy_consents").upsert(row, on_conflict="user_id,consent_type,version").execute()
+    try:
+        supabase.table("privacy_consents").upsert(row, on_conflict="user_id,consent_type,version").execute()
+        saved = _confirmed_row(
+            "privacy_consents",
+            "id,user_id,consent_type,version,granted,granted_at,revoked_at",
+            [("user_id", user_id), ("consent_type", payload.consent_type), ("version", payload.version)],
+            "تعذر تأكيد حفظ الموافقة",
+        )
+        if saved.get("granted") != payload.granted:
+            raise HTTPException(status_code=503, detail="لم تؤكد قاعدة البيانات حالة الموافقة المطلوبة")
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(status_code=503, detail="تعذر حفظ الموافقة") from None
     log_event(logger, logging.INFO, "privacy_consent_updated", consent_type=payload.consent_type, granted=payload.granted)
-    return {"success": True, "data": (result.data or [row])[0]}
+    return {"success": True, "data": saved, "meta": {"source": "SUPABASE_CONFIRMED"}}
 
 
 @router.post("/feedback")
@@ -402,19 +478,43 @@ async def create_feedback(payload: FeedbackCreate, response: Response, authoriza
     owned_scan = supabase.table("scans").select("id").eq("id", payload.scan_id).eq("user_id", str(user["id"])).limit(1).execute()
     if not owned_scan.data:
         raise HTTPException(status_code=404, detail="الفحص غير موجود أو لا تملك صلاحية الوصول إليه")
-    row = {"scan_id": payload.scan_id, "user_id": str(user["id"]), "reported_classification": payload.reported_classification, "comment": payload.comment}
-    result = supabase.table("feedback").insert(row).execute()
+    feedback_id = str(uuid4())
+    row = {"id": feedback_id, "scan_id": payload.scan_id, "user_id": str(user["id"]), "reported_classification": payload.reported_classification, "comment": payload.comment}
+    try:
+        supabase.table("feedback").insert(row).execute()
+        saved = _confirmed_row(
+            "feedback",
+            "id,scan_id,user_id,reported_classification,comment,status,created_at",
+            [("id", feedback_id), ("user_id", str(user["id"]))],
+            "تعذر تأكيد حفظ الملاحظة",
+        )
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(status_code=503, detail="تعذر حفظ الملاحظة") from None
     log_event(logger, logging.INFO, "feedback_created")
-    return {"success": True, "data": (result.data or [row])[0]}
+    return {"success": True, "data": saved, "meta": {"source": "SUPABASE_CONFIRMED"}}
 
 
 @router.post("/support")
 async def create_support_request(payload: SupportCreate, response: Response, authorization: Optional[str] = Header(None)):
     user = _require_user(authorization)
-    row = {"user_id": str(user["id"]), "email": user["email"], "subject": payload.subject.strip(), "message": payload.message.strip(), "priority": payload.priority}
-    result = supabase.table("support_requests").insert(row).execute()
+    ticket_id = f"TK-{uuid4().hex.upper()}"
+    row = {"ticket_id": ticket_id, "user_id": str(user["id"]), "email": user["email"], "subject": payload.subject.strip(), "message": payload.message.strip(), "priority": payload.priority}
+    try:
+        supabase.table("support_requests").insert(row).execute()
+        saved = _confirmed_row(
+            "support_requests",
+            "id,ticket_id,subject,status,priority,created_at",
+            [("ticket_id", ticket_id), ("user_id", str(user["id"]))],
+            "تعذر تأكيد حفظ طلب الدعم",
+        )
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(status_code=503, detail="تعذر حفظ طلب الدعم") from None
     log_event(logger, logging.INFO, "support_request_created")
-    return {"success": True, "data": (result.data or [row])[0]}
+    return {"success": True, "data": saved, "meta": {"source": "SUPABASE_CONFIRMED"}}
 
 
 @router.get("/privacy/export")
@@ -468,20 +568,62 @@ async def get_account_deletion_request(response: Response, authorization: Option
 async def create_account_deletion_request(payload: AccountDeletionRequest, response: Response, authorization: Optional[str] = Header(None)):
     user = _require_user(authorization)
     user_id = str(user["id"])
-    existing = supabase.table("account_deletion_requests").select("id,status").eq("user_id", user_id).in_("status", ["PENDING", "CONFIRMED", "PROCESSING"]).limit(1).execute()
+    try:
+        existing = supabase.table("account_deletion_requests").select("id,status").eq("user_id", user_id).in_("status", ["PENDING", "CONFIRMED", "PROCESSING"]).limit(1).execute()
+    except Exception:
+        raise HTTPException(status_code=503, detail="تعذر التحقق من طلبات الحذف السابقة") from None
     if existing.data:
-        return {"success": True, "data": existing.data[0]}
-    row = {"user_id": user_id, "status": "PENDING", "reason": (payload.reason or "").strip() or None}
-    result = supabase.table("account_deletion_requests").insert(row).execute()
+        return {"success": True, "data": existing.data[0], "meta": {"source": "SUPABASE_CONFIRMED"}}
+    request_id = str(uuid4())
+    row = {"id": request_id, "user_id": user_id, "status": "PENDING", "reason": (payload.reason or "").strip() or None}
+    try:
+        supabase.table("account_deletion_requests").insert(row).execute()
+        saved = _confirmed_row(
+            "account_deletion_requests",
+            "id,status,reason,requested_at,confirmed_at,completed_at,cancelled_at",
+            [("id", request_id), ("user_id", user_id)],
+            "تعذر تأكيد حفظ طلب الحذف",
+        )
+    except HTTPException:
+        raise
+    except Exception:
+        # A concurrent request may have won the unique active-request constraint.
+        try:
+            concurrent = supabase.table("account_deletion_requests").select(
+                "id,status,reason,requested_at,confirmed_at,completed_at,cancelled_at"
+            ).eq("user_id", user_id).in_("status", ["PENDING", "CONFIRMED", "PROCESSING"]).limit(1).execute()
+            if concurrent.data:
+                return {"success": True, "data": concurrent.data[0], "meta": {"source": "SUPABASE_CONFIRMED"}}
+        except Exception:
+            pass
+        raise HTTPException(status_code=503, detail="تعذر حفظ طلب الحذف") from None
     log_event(logger, logging.INFO, "account_deletion_requested")
-    return {"success": True, "data": (result.data or [row])[0]}
+    return {"success": True, "data": saved, "meta": {"source": "SUPABASE_CONFIRMED"}}
 
 
 @router.post("/account/deletion-request/cancel")
 async def cancel_account_deletion_request(response: Response, authorization: Optional[str] = Header(None)):
     user = _require_user(authorization)
-    result = supabase.table("account_deletion_requests").update({"status": "CANCELLED", "cancelled_at": _now()}).eq("user_id", str(user["id"])).in_("status", ["PENDING", "CONFIRMED"]).execute()
-    return {"success": True, "data": (result.data or [None])[0]}
+    user_id = str(user["id"])
+    try:
+        current = supabase.table("account_deletion_requests").select("id,status").eq("user_id", user_id).in_("status", ["PENDING", "CONFIRMED"]).order("requested_at", desc=True).limit(1).execute()
+        if not current.data:
+            raise HTTPException(status_code=409, detail="لا يوجد طلب حذف قابل للإلغاء")
+        request_id = str(current.data[0]["id"])
+        supabase.table("account_deletion_requests").update({"status": "CANCELLED", "cancelled_at": _now()}).eq("id", request_id).eq("status", current.data[0]["status"]).execute()
+        saved = _confirmed_row(
+            "account_deletion_requests",
+            "id,status,reason,requested_at,confirmed_at,completed_at,cancelled_at",
+            [("id", request_id), ("user_id", user_id)],
+            "تعذر تأكيد إلغاء طلب الحذف",
+        )
+        if saved.get("status") != "CANCELLED":
+            raise HTTPException(status_code=409, detail="تغير طلب الحذف بالتزامن؛ أعد تحميل الحالة")
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(status_code=503, detail="تعذر إلغاء طلب الحذف") from None
+    return {"success": True, "data": saved, "meta": {"source": "SUPABASE_CONFIRMED"}}
 
 
 @router.delete("/account")

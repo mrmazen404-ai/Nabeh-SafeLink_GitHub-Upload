@@ -1,16 +1,22 @@
 """Scan processing with strict guest isolation and explicit UNKNOWN outcomes."""
 
 import asyncio
+import copy
+import hashlib
+import hmac
+from concurrent.futures import ThreadPoolExecutor
 import logging
 import re
+import threading
 import time
 from datetime import datetime, timezone
 from urllib.parse import urlsplit
+from uuid import uuid4
 
 from app.db.supabase_client import supabase
 from app.observability import elapsed_ms, log_event, resource_id, safe_error
 from app.gemini.client import generate_explanation, analyze_sms_message
-from app.ml.predictor import BRANDS, SUSPICIOUS_EXTENSIONS, SUSPICIOUS_WORDS, extract_features, predict_url
+from app.ml.predictor import BRANDS, SUSPICIOUS_EXTENSIONS, SUSPICIOUS_WORDS, extract_features, predict_url, predict_url_async
 from app.virustotal.client import check_url_virustotal
 from app.dashboard.realtime import manager
 from app.config import settings
@@ -20,6 +26,8 @@ from app.scans.text_rules import analyze_message_indicators
 from app.scans.url_utils import extract_defanged_urls_from_text, extract_web_urls_from_text, normalize_web_url
 
 logger = logging.getLogger(__name__)
+_METRIC_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="nabeh-scan-metric")
+_METRIC_SLOT = threading.BoundedSemaphore(1)
 MAX_EMBEDDED_URLS = 5
 URL_FUSION_POLICY_VERSION = "1.0.0"
 VT_DANGEROUS_MIN_ENGINES = 3
@@ -28,6 +36,36 @@ ML_DANGEROUS_CORROBORATION_MIN_PROB = 0.85
 ML_STRONG_SIGNAL_MIN_PROB = 0.60
 VT_MULTIPLE_SUSPICIOUS_MIN = 2
 HYBRID_SUSPICIOUS_THRESHOLD = 0.40
+
+
+def _scan_digest(*parts: str) -> str:
+    key_material = settings.RATE_LIMIT_SALT or settings.SUPABASE_SECRET_KEY or settings.AUTH_JWT_SECRET or "nabeh-local-test-key"
+    payload = "\0".join(str(part) for part in parts).encode("utf-8")
+    return hmac.new(key_material.encode("utf-8"), payload, hashlib.sha256).hexdigest()
+
+
+async def _record_scan_metric_best_effort(classification: str) -> None:
+    """Record an aggregate metric without extending scan latency or creating an unbounded queue."""
+    if not _METRIC_SLOT.acquire(blocking=False):
+        logger.warning("scan_metric_skipped", extra={"reason": "worker_busy"})
+        return
+    try:
+        future = _METRIC_EXECUTOR.submit(record_platform_scan_metric, classification)
+    except Exception:
+        _METRIC_SLOT.release()
+        logger.warning("scan_metric_submit_failed")
+        return
+
+    future.add_done_callback(lambda _: _METRIC_SLOT.release())
+    try:
+        await asyncio.wait_for(
+            asyncio.shield(asyncio.wrap_future(future)),
+            timeout=settings.SCAN_METRIC_TIMEOUT_SECONDS,
+        )
+    except asyncio.TimeoutError:
+        logger.warning("scan_metric_timed_out")
+    except Exception:
+        logger.warning("scan_metric_persistence_failed")
 
 ARABIC_PHISHING_KEYWORDS = (
     "حسابك", "البنك", "تجميد", "تحديث", "كلمة المرور", "بطاقة", "جائزة",
@@ -132,6 +170,7 @@ def _build_url_evidence_card(target_url: str, combined: dict, ml_result: dict, v
                 "classification": vt_status,
                 "evidence_timestamp": vt_result.get("evidence_timestamp"),
                 "last_analysis_date": vt_result.get("last_analysis_date"),
+                "freshness_reason": vt_result.get("analysis_freshness_reason"),
                 "analysis_data_available": bool(counts_available),
                 "counts": vt_counts,
                 "scanner_results": scanner_results,
@@ -164,7 +203,45 @@ class ScanPersistenceError(Exception):
     """Raised when a registered user's scan cannot be persisted completely."""
 
 
+class ScanIdempotencyConflictError(Exception):
+    """Raised when one idempotency key is reused for a different scan input."""
+
+
 class ScanService:
+    @staticmethod
+    async def _find_idempotent_scan(user_id: str, key_hash: str, input_hash: str) -> dict | None:
+        try:
+            result = (
+                supabase.table("scans")
+                .select("id,status,input_hash,classification,analysis_snapshot")
+                .eq("user_id", user_id)
+                .eq("idempotency_key_hash", key_hash)
+                .limit(1)
+                .execute()
+            )
+        except Exception:
+            raise ScanPersistenceError("unable to look up idempotent scan") from None
+        if not result.data:
+            return None
+        row = result.data[0]
+        if not hmac.compare_digest(str(row.get("input_hash") or ""), input_hash):
+            raise ScanIdempotencyConflictError("idempotency key was already used for a different scan input")
+        if row.get("status") != "COMPLETED":
+            raise ScanPersistenceError("existing idempotent scan is not complete")
+        snapshot = row.get("analysis_snapshot")
+        idempotency = snapshot.get("idempotency") if isinstance(snapshot, dict) else None
+        saved_response = idempotency.get("response") if isinstance(idempotency, dict) else None
+        if not isinstance(saved_response, dict):
+            raise ScanPersistenceError("existing idempotent scan has no complete response snapshot")
+        replay = copy.deepcopy(saved_response)
+        replay["scan_id"] = str(row["id"])
+        replay["classification"] = str(row.get("classification") or replay.get("classification") or "UNKNOWN")
+        replay["idempotent_replay"] = True
+        replay["is_guest"] = False
+        if replay.get("evidence_card"):
+            replay["evidence_card"]["scan_id"] = str(row["id"])
+        return replay
+
     @staticmethod
     def extract_urls_from_text(text: str) -> list[str]:
         return extract_web_urls_from_text(text)
@@ -451,8 +528,14 @@ class ScanService:
             ml_started = time.perf_counter()
             log_event(logger, logging.INFO, "scan_ml_started", operation_id=operation_id, provider="ML_MODEL", mode="url")
             try:
-                res = await asyncio.to_thread(predict_url, target_url)
-                log_event(logger, logging.INFO, "scan_ml_succeeded", operation_id=operation_id, provider="ML_MODEL", classification=res.get("classification"), duration_ms=elapsed_ms(ml_started))
+                remaining = max(0.0, deadline - asyncio.get_running_loop().time())
+                res = await predict_url_async(
+                    target_url,
+                    timeout=min(settings.SCAN_ML_TIMEOUT_SECONDS, remaining),
+                    predictor_fn=predict_url,
+                )
+                event = "scan_ml_succeeded" if res.get("source") == "ML_MODEL" else "scan_ml_completed_with_limited_evidence"
+                log_event(logger, logging.INFO, event, operation_id=operation_id, provider="ML_MODEL", classification=res.get("classification"), source=res.get("source"), duration_ms=elapsed_ms(ml_started))
                 return res
             except Exception as error:
                 log_event(logger, logging.ERROR, "scan_ml_failed", operation_id=operation_id, provider="ML_MODEL", error_type=safe_error(error), error_code="MODEL_ERROR", duration_ms=elapsed_ms(ml_started))
@@ -491,6 +574,9 @@ class ScanService:
         if not ai_enabled:
             explanation = cls._local_explanation(combined["classification"], language)
             explanation["provider"] = "LOCAL_FEATURE_DISABLED"
+            explanation["provider_status"] = "DISABLED"
+            explanation["fallback_reason"] = "AI_FEATURE_DISABLED"
+            explanation["input_truncated"] = False
             log_event(logger, logging.WARNING, "scan_fallback_selected", operation_id=operation_id, provider="LOCAL_RULES", fallback_reason="AI_FEATURE_DISABLED")
         else:
             try:
@@ -507,10 +593,16 @@ class ScanService:
                 log_event(logger, logging.WARNING, "scan_gemini_timeout", operation_id=operation_id, provider="GEMINI", error_code="GEMINI_TIMEOUT")
                 explanation = cls._local_explanation(combined["classification"], language)
                 explanation["provider"] = "LOCAL_TIMEOUT_FALLBACK"
+                explanation["provider_status"] = "FALLBACK"
+                explanation["fallback_reason"] = "GEMINI_TIMEOUT"
+                explanation["input_truncated"] = len(target_url) > 300
             except Exception as error:
                 log_event(logger, logging.WARNING, "scan_gemini_failed", operation_id=operation_id, provider="GEMINI", error_type=safe_error(error), error_code="GEMINI_PROVIDER_ERROR")
                 explanation = cls._local_explanation(combined["classification"], language)
                 explanation["provider"] = "LOCAL_ERROR_FALLBACK"
+                explanation["provider_status"] = "FALLBACK"
+                explanation["fallback_reason"] = "GEMINI_PROVIDER_ERROR"
+                explanation["input_truncated"] = len(target_url) > 300
 
         log_event(logger, logging.INFO, "scan_succeeded", operation_id=operation_id, classification=combined["classification"], provider=explanation.get("provider"), duration_ms=elapsed_ms(started), mode="url")
         evidence_card = _build_url_evidence_card(target_url, combined, ml_result, vt_result, explanation)
@@ -534,14 +626,17 @@ class ScanService:
                 "stage2_virustotal": {
                     "name": "Stage 2: VirusTotal Engine Intelligence",
                     "status": vt_result.get("status", "UNKNOWN"),
-                    "malicious": vt_result.get("malicious", 0),
-                    "suspicious": vt_result.get("suspicious", 0),
-                    "harmless": vt_result.get("harmless", 0),
-                    "total_engines": vt_result.get("total_engines", 0),
+                    "provider_status": vt_result.get("provider_status", "NOT_REPORTED_BY_PROVIDER"),
+                    "malicious": vt_result.get("malicious"),
+                    "suspicious": vt_result.get("suspicious"),
+                    "harmless": vt_result.get("harmless"),
+                    "total_engines": vt_result.get("total_engines"),
                 },
                 "stage3_gemini": {
                     "name": "Stage 3: Gemini AI URL Threat Research",
                     "provider": explanation.get("provider", "LOCAL_RULES"),
+                    "provider_status": explanation.get("provider_status", "NOT_REPORTED"),
+                    "fallback_reason": explanation.get("fallback_reason"),
                     "classification": explanation.get("classification", "UNKNOWN"),
                     "summary": explanation.get("summary", ""),
                     "recommendation": explanation.get("recommendation", ""),
@@ -573,10 +668,17 @@ class ScanService:
         log_event(logger, logging.INFO, "scan_validation_succeeded", operation_id=operation_id, input_type="TEXT", mode="sms", links_detected=len(all_extracted_urls), links_scanned=len(extracted_urls))
         extracted_url = extracted_urls[0] if extracted_urls else ""
         semaphore = asyncio.Semaphore(2)
+        ml_semaphore = asyncio.Semaphore(2)
 
         async def analyze_embedded_url(url: str) -> dict:
             try:
-                ml = await asyncio.to_thread(predict_url, url)
+                async with ml_semaphore:
+                    remaining_for_ml = max(0.0, deadline - asyncio.get_running_loop().time())
+                    ml = await predict_url_async(
+                        url,
+                        timeout=min(settings.SCAN_ML_TIMEOUT_SECONDS, remaining_for_ml),
+                        predictor_fn=predict_url,
+                    )
             except Exception:
                 log_event(logger, logging.ERROR, "scan_ml_failed", operation_id=operation_id, provider="ML_MODEL", error_code="MODEL_ERROR")
                 ml = {"classification": "UNKNOWN", "confidence": None, "source": "ML_ERROR"}
@@ -663,6 +765,7 @@ class ScanService:
             ai_analysis = cls._local_sms_fallback(
                 text_content, selected_url or extracted_url, combined, language, "LOCAL_FEATURE_DISABLED"
             )
+            ai_analysis.update(provider_status="DISABLED", fallback_reason="AI_FEATURE_DISABLED", input_truncated=False)
             log_event(logger, logging.WARNING, "scan_gemini_fallback_selected", operation_id=operation_id, provider="LOCAL_RULES", fallback_reason="AI_FEATURE_DISABLED", mode="sms")
         else:
             try:
@@ -680,11 +783,13 @@ class ScanService:
                 ai_analysis = cls._local_sms_fallback(
                     text_content, selected_url or extracted_url, combined, language, "LOCAL_TIMEOUT_FALLBACK"
                 )
+                ai_analysis.update(provider_status="FALLBACK", fallback_reason="GEMINI_TIMEOUT", input_truncated=len(text_content or "") > 600)
             except Exception as error:
                 log_event(logger, logging.WARNING, "scan_gemini_failed", operation_id=operation_id, provider="GEMINI", error_type=safe_error(error), error_code="GEMINI_PROVIDER_ERROR", mode="sms")
                 ai_analysis = cls._local_sms_fallback(
                     text_content, selected_url or extracted_url, combined, language, "LOCAL_ERROR_FALLBACK"
                 )
+                ai_analysis.update(provider_status="FALLBACK", fallback_reason="GEMINI_PROVIDER_ERROR", input_truncated=len(text_content or "") > 600)
 
         local_text = cls.analyze_text_phishing(text_content, bool(extracted_url))
         ai_class = str(ai_analysis.get("classification", "UNKNOWN")).upper()
@@ -722,6 +827,9 @@ class ScanService:
             "reasons": ai_analysis.get("reasons", []),
             "recommendation": ai_analysis.get("recommendation", ""),
             "provider": ai_analysis.get("provider", "GEMINI_AI"),
+            "provider_status": ai_analysis.get("provider_status", "NOT_REPORTED"),
+            "fallback_reason": ai_analysis.get("fallback_reason"),
+            "input_truncated": ai_analysis.get("input_truncated", False),
             "claimed_sender": ai_analysis.get("claimed_sender", "جهة غير محددة"),
             "official_domain": ai_analysis.get("official_domain", "غير متاح"),
             "official_portal_url": ai_analysis.get("official_portal_url", "غير متاح"),
@@ -794,10 +902,11 @@ class ScanService:
                             "classification": item["combined"].get("classification", "UNKNOWN"),
                             "source": item["combined"].get("source", "UNKNOWN"),
                             "virustotal_status": item["virustotal"].get("status", "UNKNOWN"),
-                            "malicious": item["virustotal"].get("malicious", 0),
-                            "suspicious": item["virustotal"].get("suspicious", 0),
-                            "harmless": item["virustotal"].get("harmless", 0),
-                            "total_engines": item["virustotal"].get("total_engines", 0),
+                            "virustotal_provider_status": item["virustotal"].get("provider_status", "NOT_REPORTED_BY_PROVIDER"),
+                            "malicious": item["virustotal"].get("malicious"),
+                            "suspicious": item["virustotal"].get("suspicious"),
+                            "harmless": item["virustotal"].get("harmless"),
+                            "total_engines": item["virustotal"].get("total_engines"),
                             "ml_classification": item["ml"].get("classification", "UNKNOWN"),
                             "ml_source": item["ml"].get("source", "N/A"),
                         }
@@ -808,6 +917,8 @@ class ScanService:
                 "stage3_gemini_sms": {
                     "name": "Stage 3: Gemini AI Smishing Threat Research",
                     "provider": ai_analysis.get("provider", "GEMINI_AI"),
+                    "provider_status": ai_analysis.get("provider_status", "NOT_REPORTED"),
+                    "fallback_reason": ai_analysis.get("fallback_reason"),
                     "classification": ai_analysis.get("classification", "UNKNOWN"),
                     "summary": ai_analysis.get("summary", ""),
                     "recommendation": ai_analysis.get("recommendation", ""),
@@ -843,11 +954,7 @@ class ScanService:
             scan_res["input_value"] = raw_input
         scan_res["is_guest"] = True
         scan_res["scan_id"] = None
-        try:
-            await asyncio.to_thread(record_platform_scan_metric, scan_res.get("classification", "UNKNOWN"))
-        except Exception:
-            # Aggregate metrics must never make a guest scan fail.
-            logger.warning("guest_scan_metric_persistence_failed")
+        await _record_scan_metric_best_effort(scan_res.get("classification", "UNKNOWN"))
         log_event(logger, logging.INFO, "guest_scan_finished", operation_id=operation_id, classification=scan_res.get("classification"))
         return scan_res
 
@@ -864,9 +971,24 @@ class ScanService:
             return "[URL REDACTED]"
 
     @classmethod
-    async def process_authenticated_scan(cls, input_type: str, raw_input: str, user_id: str, language: str = "ar") -> dict:
+    async def process_authenticated_scan(
+        cls,
+        input_type: str,
+        raw_input: str,
+        user_id: str,
+        language: str = "ar",
+        idempotency_key: str | None = None,
+    ) -> dict:
         if not user_id:
             raise ScanPersistenceError("verified user ID required")
+
+        input_hash = _scan_digest(user_id, input_type, raw_input)
+        idempotency_key_hash = _scan_digest(user_id, "IDEMPOTENCY", idempotency_key) if idempotency_key else None
+        if idempotency_key_hash:
+            replay = await cls._find_idempotent_scan(user_id, idempotency_key_hash, input_hash)
+            if replay is not None:
+                log_event(logger, logging.INFO, "authenticated_scan_idempotent_replay", scan_id=replay.get("scan_id"))
+                return replay
 
         operation_id = resource_id(raw_input)
         log_event(logger, logging.INFO, "authenticated_scan_started", operation_id=operation_id, input_type=input_type, language=language)
@@ -882,7 +1004,12 @@ class ScanService:
             persistence_started = time.perf_counter()
             log_event(logger, logging.INFO, "scan_persistence_started", operation_id=operation_id, provider="SUPABASE", operation_name="insert_scan")
             now_iso = datetime.now(timezone.utc).isoformat()
+            scan_id = str(uuid4())
+            scan_res["scan_id"] = scan_id
+            if scan_res.get("evidence_card"):
+                scan_res["evidence_card"]["scan_id"] = scan_id
             scan_data = {
+                "id": scan_id,
                 "user_id": user_id,
                 "input_type": input_type,
                 "input_value_masked": cls._mask_input(input_type, raw_input),
@@ -893,26 +1020,62 @@ class ScanService:
                 "recommendation": scan_res.get("explanation", {}).get("recommendation", ""),
                 "completed_at": now_iso,
             }
-            saved = supabase.table("scans").insert(scan_data).execute()
-            if saved.data:
-                scan_id = saved.data[0].get("id")
-                scan_res["scan_id"] = scan_id
-                if scan_id and scan_res.get("evidence_card"):
-                    scan_res["evidence_card"]["scan_id"] = str(scan_id)
+            if idempotency_key_hash:
+                response_snapshot = {
+                    key: copy.deepcopy(value)
+                    for key, value in scan_res.items()
+                    if key not in {"input_value", "raw_input", "text_content", "message"}
+                }
+                snapshot = dict(scan_res.get("stages", {}) or {})
+                if scan_res.get("evidence_card"):
+                    snapshot["evidence_card"] = copy.deepcopy(scan_res["evidence_card"])
+                snapshot["explanation"] = copy.deepcopy(scan_res.get("explanation", {}))
+                snapshot["idempotency"] = {
+                    "input_hash": input_hash,
+                    "response": response_snapshot,
+                }
+                scan_data["idempotency_key_hash"] = idempotency_key_hash
+                scan_data["input_hash"] = input_hash
+                scan_data["analysis_snapshot"] = snapshot
+            try:
+                supabase.table("scans").insert(scan_data).execute()
+            except Exception:
+                if idempotency_key_hash:
+                    replay = await cls._find_idempotent_scan(user_id, idempotency_key_hash, input_hash)
+                    if replay is not None:
+                        log_event(logger, logging.INFO, "authenticated_scan_idempotent_race_replay", scan_id=replay.get("scan_id"))
+                        return replay
+                raise
+            persisted_fields = "id,status,classification,analysis_snapshot" if idempotency_key_hash else "id,status,classification"
+            persisted = (
+                supabase.table("scans")
+                .select(persisted_fields)
+                .eq("id", scan_id)
+                .eq("user_id", user_id)
+                .limit(1)
+                .execute()
+            )
+            if not persisted.data or str(persisted.data[0].get("id")) != scan_id:
+                raise ScanPersistenceError("scan insert could not be confirmed by readback")
+            if idempotency_key_hash:
+                stored_snapshot = persisted.data[0].get("analysis_snapshot")
+                stored_idempotency = stored_snapshot.get("idempotency") if isinstance(stored_snapshot, dict) else None
+                if not isinstance(stored_idempotency, dict) or not isinstance(stored_idempotency.get("response"), dict):
+                    raise ScanPersistenceError("idempotent scan snapshot was not confirmed")
+            if persisted.data:
                 log_event(logger, logging.INFO, "scan_persistence_succeeded", operation_id=operation_id, provider="SUPABASE", operation_name="insert_scan", scan_id=scan_id, duration_ms=elapsed_ms(persistence_started))
-                try:
-                    await asyncio.to_thread(record_platform_scan_metric, scan_res.get("classification", "UNKNOWN"))
-                except Exception:
-                    logger.warning("authenticated_scan_metric_persistence_failed")
-                try:
-                    analysis_snapshot = dict(scan_res.get("stages", {}) or {})
-                    if scan_res.get("evidence_card"):
-                        analysis_snapshot["evidence_card"] = scan_res["evidence_card"]
-                    supabase.table("scans").update({"analysis_snapshot": analysis_snapshot}).eq("id", scan_id).eq("user_id", user_id).execute()
-                except Exception:
-                    # Older installations can apply the additive SQL migration later;
-                    # the scan itself must not fail merely because the optional snapshot is absent.
-                    log_event(logger, logging.WARNING, "supabase_operation_failed", operation_id=operation_id, provider="SUPABASE", operation_name="update_analysis_snapshot", error_code="PERSISTENCE_FAILED")
+                await _record_scan_metric_best_effort(scan_res.get("classification", "UNKNOWN"))
+                if not idempotency_key_hash:
+                    try:
+                        analysis_snapshot = dict(scan_res.get("stages", {}) or {})
+                        if scan_res.get("evidence_card"):
+                            analysis_snapshot["evidence_card"] = scan_res["evidence_card"]
+                        snapshot_result = supabase.table("scans").update({"analysis_snapshot": analysis_snapshot}).eq("id", scan_id).eq("user_id", user_id).execute()
+                        if not isinstance(getattr(snapshot_result, "data", None), list) or not snapshot_result.data:
+                            log_event(logger, logging.WARNING, "supabase_persistence_unconfirmed", operation_id=operation_id, provider="SUPABASE", operation_name="update_analysis_snapshot", error_code="PERSISTENCE_UNCONFIRMED")
+                    except Exception:
+                        # Historical snapshots are optional unless the client requested idempotent replay.
+                        log_event(logger, logging.WARNING, "supabase_operation_failed", operation_id=operation_id, provider="SUPABASE", operation_name="update_analysis_snapshot", error_code="PERSISTENCE_FAILED")
 
                 explanation = scan_res.get("explanation", {})
                 raw_provider = str(explanation.get("provider", "LOCAL_RULES")).upper()
@@ -936,7 +1099,9 @@ class ScanService:
                     "provider": provider,
                 }
                 try:
-                    supabase.table("scan_explanations").insert(explanation_data).execute()
+                    explanation_result = supabase.table("scan_explanations").insert(explanation_data).execute()
+                    if not isinstance(getattr(explanation_result, "data", None), list) or not explanation_result.data:
+                        log_event(logger, logging.WARNING, "supabase_persistence_unconfirmed", operation_id=operation_id, provider="SUPABASE", operation_name="insert_scan_explanation", error_code="PERSISTENCE_UNCONFIRMED")
                 except Exception:
                     log_event(logger, logging.WARNING, "supabase_operation_failed", operation_id=operation_id, provider="SUPABASE", operation_name="insert_scan_explanation", error_code="PERSISTENCE_FAILED")
                 event = {
@@ -962,22 +1127,29 @@ class ScanService:
                     }
                     try:
                         saved_notification = supabase.table("notifications").insert(notification).execute()
-                        notification_data = (saved_notification.data or [notification])[0]
-                        log_event(logger, logging.INFO, "notification_succeeded", operation_id=operation_id, scan_id=scan_id, status="succeeded")
+                        notification_rows = getattr(saved_notification, "data", None)
+                        notification_data = notification_rows[0] if isinstance(notification_rows, list) and notification_rows and isinstance(notification_rows[0], dict) and notification_rows[0].get("id") else None
+                        if notification_data is None:
+                            log_event(logger, logging.WARNING, "notification_persistence_unconfirmed", operation_id=operation_id, scan_id=scan_id, error_code="PERSISTENCE_UNCONFIRMED")
+                        else:
+                            log_event(logger, logging.INFO, "notification_succeeded", operation_id=operation_id, scan_id=scan_id, status="succeeded")
                     except Exception:
                         log_event(logger, logging.WARNING, "notification_failed", operation_id=operation_id, scan_id=scan_id, error_code="NOTIFICATION_FAILED")
-                        notification_data = notification
-                    try:
-                        await manager.broadcast(user_id, {
-                            "type": "security_alert",
-                            "severity": "critical",
-                            "notification": notification_data,
-                            "created_at": now_iso,
-                        })
-                        log_event(logger, logging.INFO, "websocket_broadcast_succeeded", operation_id=operation_id, scan_id=scan_id, mode="security_alert")
-                    except Exception as error:
-                        log_event(logger, logging.WARNING, "websocket_broadcast_failed", operation_id=operation_id, scan_id=scan_id, mode="security_alert", error_type=safe_error(error), error_code="BROADCAST_FAILED")
+                        notification_data = None
+                    if notification_data is not None:
+                        try:
+                            await manager.broadcast(user_id, {
+                                "type": "security_alert",
+                                "severity": "critical",
+                                "notification": notification_data,
+                                "created_at": now_iso,
+                            })
+                            log_event(logger, logging.INFO, "websocket_broadcast_succeeded", operation_id=operation_id, scan_id=scan_id, mode="security_alert")
+                        except Exception as error:
+                            log_event(logger, logging.WARNING, "websocket_broadcast_failed", operation_id=operation_id, scan_id=scan_id, mode="security_alert", error_type=safe_error(error), error_code="BROADCAST_FAILED")
                 log_event(logger, logging.INFO, "authenticated_scan_persisted", operation_id=operation_id, scan_id=scan_id)
+        except ScanIdempotencyConflictError:
+            raise
         except Exception as error:
             log_event(logger, logging.ERROR, "scan_persistence_failed", operation_id=operation_id, provider="SUPABASE", error_type=safe_error(error), error_code="PERSISTENCE_FAILED")
             raise ScanPersistenceError("scan persistence failed") from None

@@ -20,6 +20,7 @@ const API_URL = (() => {
   }
   return configuredApiUrl;
 })();
+export const SCAN_IDEMPOTENCY_ENABLED = import.meta.env.VITE_SCAN_IDEMPOTENCY_ENABLED === 'true';
 
 if (
   import.meta.env.PROD &&
@@ -69,13 +70,13 @@ api.interceptors.response.use(
   },
 );
 
-export const scanURL = async (inputValue, language = 'ar', isGuest = true, inputType = 'URL') => {
+export const scanURL = async (inputValue, language = 'ar', isGuest = true, inputType = 'URL', idempotencyKey = null) => {
   const endpoint = isGuest ? '/scans/guest' : '/scans/';
   const response = await api.post(endpoint, {
     input_type: inputType,
     input_value: inputValue,
     language,
-  });
+  }, SCAN_IDEMPOTENCY_ENABLED && idempotencyKey && !isGuest ? { headers: { 'Idempotency-Key': idempotencyKey } } : undefined);
   return response.data;
 };
 

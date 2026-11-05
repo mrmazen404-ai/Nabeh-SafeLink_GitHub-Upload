@@ -172,9 +172,18 @@ def health(response: Response):
     ml_readiness = get_model_readiness()
     virustotal_readiness = get_virustotal_readiness()
     gemini_readiness = get_provider_readiness()
+    gemini_last_status = gemini_readiness.get("last_call", {}).get("status")
+    core_ready = ml_readiness.get("status") == "ready" and virustotal_readiness.get("status") == "configured"
+    providers_degraded = (
+        gemini_readiness.get("status") != "configured"
+        or gemini_last_status in {"failed", "rate_limited", "unavailable", "not_configured", "fallback", "busy"}
+        or virustotal_readiness.get("functional_status") in {"last_call_failed", "capacity_limited"}
+    )
     data = {
         "status": "healthy",
-        "readiness": "ready" if ml_readiness.get("status") == "ready" and virustotal_readiness.get("status") == "configured" else "degraded",
+        "readiness": "ready" if core_ready else "degraded",
+        "providers_degraded": providers_degraded,
+        "fallback": {"status": "enabled", "provider": "LOCAL_RULES"},
         "ml_model": ml_readiness,
         "gemini": gemini_readiness,
         "virustotal": virustotal_readiness,
@@ -191,6 +200,11 @@ def readiness(response: Response):
     vt = get_virustotal_readiness()
     gemini = get_provider_readiness()
     ready = ml.get("status") == "ready" and vt.get("status") == "configured"
+    gemini_degraded = (
+        gemini.get("status") != "configured"
+        or gemini.get("last_call", {}).get("status") in {"failed", "rate_limited", "unavailable", "not_configured", "fallback", "busy"}
+        or vt.get("functional_status") in {"last_call_failed", "capacity_limited"}
+    )
     if not ready:
         response.status_code = 503
     log_event(
@@ -202,7 +216,13 @@ def readiness(response: Response):
         virustotal_status=vt.get("status"),
         gemini_status=gemini.get("status"),
     )
-    return {"status": "ready" if ready else "degraded", "ml_model": ml, "virustotal": vt, "gemini": gemini}
+    return {
+        "status": "degraded" if gemini_degraded and ready else ("ready" if ready else "degraded"),
+        "ml_model": ml,
+        "virustotal": vt,
+        "gemini": gemini,
+        "fallback": {"status": "enabled", "provider": "LOCAL_RULES"},
+    }
 
 
 # Local production-like mode: one URL serves both the built React app and the API.
