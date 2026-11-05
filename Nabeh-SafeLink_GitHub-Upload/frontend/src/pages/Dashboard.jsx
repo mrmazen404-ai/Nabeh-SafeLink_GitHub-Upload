@@ -219,10 +219,11 @@ export default function Dashboard({ activeTab, setActiveTab, onNavigateAuth }) {
 
   if (loading) {
     return (
-      <main className="welcome-page dashboard-page" dir={dir}>
+      <main className="welcome-page dashboard-page" dir={dir} aria-busy="true">
         <Header activeTab={activeTab} setActiveTab={setActiveTab} onNavigateAuth={onNavigateAuth} />
-        <div className="dashboard-loading">
-          {t('dashboard.loading')}
+        <div className="dashboard-loading" role="status" aria-live="polite">
+          <span className="dashboard-loading-spinner" aria-hidden="true" />
+          <span>{t('dashboard.loading')}</span>
         </div>
         <Footer />
       </main>
@@ -260,36 +261,37 @@ export default function Dashboard({ activeTab, setActiveTab, onNavigateAuth }) {
         </div>
 
         {message && (
-          <div className="welcome-graduation" style={{ marginBottom: '24px', padding: '16px 24px', background: 'var(--color-secondary-subtle)', borderColor: 'var(--color-secondary)' }}>
-            <p style={{ margin: 0, fontSize: '14px', fontWeight: 600, color: 'var(--color-primary)' }}>{message}</p>
+          <div className="dashboard-feedback" role="status" aria-live="polite" aria-atomic="true">
+            <span className="dashboard-feedback-mark" aria-hidden="true" />
+            <p>{message}</p>
           </div>
         )}
 
         {/* Navigation Tabs */}
-        <div className="dashboard-tabs" style={{ display: 'flex', gap: '8px', background: 'color-mix(in srgb, var(--color-bg) 85%, transparent)', padding: '8px', borderRadius: '16px', border: '1px solid var(--color-border)', marginBottom: '32px', overflowX: 'auto', backdropFilter: 'blur(12px)' }}>
-          {[
-            ['overview', t('dashboard.tabs.overview')],
-            ['history', t('dashboard.tabs.history')],
-            ['profile', t('dashboard.tabs.profile')],
-            ['security', t('dashboard.tabs.security')],
-            ['notifications', `${t('dashboard.tabs.notifications')}${notifications.some((n) => !n.is_read) ? ' •' : ''}`],
-            ['privacy', t('dashboard.tabs.privacy')]
-          ].map(([key, label]) => (
-            <button
-              key={key}
-              type="button"
-              onClick={() => setActive(key)}
-              className={active === key ? 'welcome-primary-button' : 'welcome-secondary-button'}
-              style={{
-                borderRadius: '11px',
-                padding: '10px 20px',
-                fontSize: '13px',
-                boxShadow: active === key ? undefined : 'none'
-              }}
-            >
-              {label}
-            </button>
-          ))}
+        <div className="dashboard-tabs-wrap">
+          <div className="dashboard-tabs" role="group" aria-label={lang === 'ar' ? 'أقسام لوحة التحكم' : 'Dashboard sections'}>
+            {[
+              ['overview', t('dashboard.tabs.overview')],
+              ['history', t('dashboard.tabs.history')],
+              ['profile', t('dashboard.tabs.profile')],
+              ['security', t('dashboard.tabs.security')],
+              ['notifications', `${t('dashboard.tabs.notifications')}${notifications.some((n) => !n.is_read) ? ' •' : ''}`],
+              ['privacy', t('dashboard.tabs.privacy')]
+            ].map(([key, label]) => (
+              <button
+                key={key}
+                type="button"
+                onClick={() => setActive(key)}
+                className={`dashboard-tab ${active === key ? 'is-active welcome-primary-button' : 'welcome-secondary-button'}`}
+                aria-pressed={active === key}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+          <span className="dashboard-tabs-hint">
+            {lang === 'ar' ? 'مرّر أفقياً للتنقل بين الأقسام' : 'Scroll horizontally to explore sections'}
+          </span>
         </div>
 
         {active === 'overview' && (
@@ -733,9 +735,11 @@ function ScanTable({ scans, onSelect, emptyText, t, lang }) {
 
 function Empty({ text, action, t }) {
   return (
-    <div style={{ textAlign: 'center', padding: '40px', color: 'var(--color-text-secondary)' }}>
-      <BarChartIcon size={32} style={{ marginBottom: '10px', opacity: 0.5, color: 'var(--color-secondary)' }} />
-      <p style={{ fontSize: '14px', marginBottom: '16px' }}>{text}</p>
+    <div className="dashboard-empty" aria-live="polite" aria-atomic="true">
+      <span className="dashboard-empty-icon" aria-hidden="true">
+        <BarChartIcon size={32} />
+      </span>
+      <p>{text}</p>
       {action && (
         <button type="button" className="welcome-primary-button" onClick={action}>
           {t ? t('home.startScanBtn') : 'Start Scan'}
