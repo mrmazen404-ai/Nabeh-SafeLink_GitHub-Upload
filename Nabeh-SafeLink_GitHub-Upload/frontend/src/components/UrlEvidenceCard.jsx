@@ -154,7 +154,7 @@ export default function UrlEvidenceCard({ card, lang = 'ar', t }) {
         </section>
       </div>
 
-      <section className="url-evidence-panel" aria-labelledby="url-evidence-observations-title">
+      <section className="url-evidence-panel url-evidence-observations-panel" aria-labelledby="url-evidence-observations-title">
         <h3 id="url-evidence-observations-title">{text('Observations')}</h3>
         {observations.length > 0 ? (
           <dl className="url-evidence-observations">

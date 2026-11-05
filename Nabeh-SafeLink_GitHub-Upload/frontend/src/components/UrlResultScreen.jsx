@@ -160,7 +160,7 @@ export default function UrlResultScreen({ result, onReset, activeTab, setActiveT
                 <LinkIcon size={16} color="var(--color-secondary)" />
                 {lang === 'ar' ? 'الرابط المباشر المفحوص (Inspected URL):' : 'Inspected URL:'}
               </span>
-              <div className="url-text" dir="ltr" style={{ wordBreak: 'break-all', marginTop: '6px', fontFamily: 'monospace', fontSize: '0.95rem' }}>
+              <div className="url-text result-url-content" dir="ltr" tabIndex={0} aria-label={lang === 'ar' ? 'الرابط الكامل المفحوص' : 'Full inspected URL'} style={{ wordBreak: 'break-all', marginTop: '6px', fontFamily: 'monospace', fontSize: '0.95rem' }}>
                 {targetUrl}
               </div>
             </div>
@@ -196,26 +196,6 @@ export default function UrlResultScreen({ result, onReset, activeTab, setActiveT
                   {exp.summary || (lang === 'ar' ? 'اكتملت دراسة أمان الرابط بناءً على الأدلة المستلمة.' : 'Link security evaluation completed based on received evidence.')}
                 </p>
 
-                {assistantClassification && (
-                  <div className="explanation-text" style={{ marginTop: '10px', fontWeight: 600 }}>
-                    {usesGemini
-                      ? (lang === 'ar' ? 'تصنيف Gemini المساعد: ' : 'Gemini supporting classification: ')
-                      : (lang === 'ar' ? 'تصنيف التحليل الاحتياطي: ' : 'Fallback analysis classification: ')}
-                    {assistantClassification}
-                  </div>
-                )}
-
-                {Array.isArray(exp.reasons) && exp.reasons.length > 0 && (
-                  <ul className="reasons-list" style={{ marginTop: '16px' }}>
-                    {exp.reasons.map((reason, i) => (
-                      <li key={i}>
-                        <PinIcon size={14} color="var(--color-secondary)" />
-                        <span>{reason}</span>
-                      </li>
-                    ))}
-                  </ul>
-                )}
-
                 {exp.recommendation && (
                   <div className="recommendation-block">
                     <TargetIcon size={18} color="var(--color-secondary)" />
@@ -226,15 +206,44 @@ export default function UrlResultScreen({ result, onReset, activeTab, setActiveT
                   </div>
                 )}
 
-                <div role="note" style={{ marginTop: '20px', padding: '14px 16px', borderRadius: '12px', background: 'var(--color-bg-subtle)', border: '1px solid var(--color-border-subtle)', color: 'var(--color-text-subtle)', fontSize: '0.85rem', lineHeight: '1.6' }}>
-                  {lang === 'ar'
-                    ? 'لا نعرض درجات رقمية للضغط أو سرقة البيانات أو الانتحال قبل معايرتها والتحقق منها على مجموعة مستقلة.'
-                    : 'Numeric urgency, credential-theft, and impersonation scores are withheld until independently validated and calibrated.'}
-                </div>
+                <details className="result-details-disclosure result-inline-disclosure">
+                  <summary>{lang === 'ar' ? 'تفاصيل التفسير والأسباب' : 'Explanation details and reasons'}</summary>
+                  {assistantClassification && (
+                    <div className="explanation-text" style={{ marginTop: '12px', fontWeight: 600 }}>
+                      {usesGemini
+                        ? (lang === 'ar' ? 'تصنيف Gemini المساعد: ' : 'Gemini supporting classification: ')
+                        : (lang === 'ar' ? 'تصنيف التحليل الاحتياطي: ' : 'Fallback analysis classification: ')}
+                      {assistantClassification}
+                    </div>
+                  )}
+
+                  {Array.isArray(exp.reasons) && exp.reasons.length > 0 && (
+                    <ul className="reasons-list" style={{ marginTop: '12px' }}>
+                      {exp.reasons.map((reason, i) => (
+                        <li key={i}>
+                          <PinIcon size={14} color="var(--color-secondary)" />
+                          <span>{reason}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+
+                  <div role="note" className="result-calibration-note" style={{ marginTop: '14px', padding: '12px 14px', borderRadius: '12px', background: 'var(--color-bg-subtle)', border: '1px solid var(--color-border-subtle)', color: 'var(--color-text-subtle)', fontSize: '0.85rem', lineHeight: '1.6' }}>
+                    {lang === 'ar'
+                      ? 'لا نعرض درجات رقمية للضغط أو سرقة البيانات أو الانتحال قبل معايرتها والتحقق منها على مجموعة مستقلة.'
+                      : 'Numeric urgency, credential-theft, and impersonation scores are withheld until independently validated and calibrated.'}
+                  </div>
+                </details>
               </div>
             )}
 
-            <UrlEvidenceCard card={result?.evidence_card} lang={lang} t={t} />
+            <details className="result-details-disclosure url-evidence-disclosure">
+              <summary className="result-evidence-summary">
+                <span>{lang === 'ar' ? 'الأدلة الفنية وسياسة القرار' : 'Technical evidence and decision policy'}</span>
+                <small>{lang === 'ar' ? 'عرض التفاصيل عند الحاجة' : 'Expand details when needed'}</small>
+              </summary>
+              <UrlEvidenceCard card={result?.evidence_card} lang={lang} t={t} />
+            </details>
 
           </section>
 
