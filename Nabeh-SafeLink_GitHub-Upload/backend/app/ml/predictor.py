@@ -37,6 +37,14 @@ URL_SHORTENERS = (
     "cutt.ly", "rebrand.ly", "shorturl.at", "s.id", "clck.ru", "rb.gy", "v.gd"
 )
 
+# Exact registrable domains only. These are context signals, never an allowlist:
+# a URL on a trusted platform can still be compromised or malicious.
+KNOWN_PLATFORM_ROOTS = frozenset({
+    "github.com", "github.io", "gitlab.com", "bitbucket.org",
+    "microsoft.com", "microsoftonline.com", "google.com", "googleapis.com",
+    "amazon.com", "amazon.sa", "apple.com", "python.org", "mozilla.org",
+})
+
 
 def is_shortener_url(raw_url: str) -> bool:
     if not raw_url:
@@ -52,6 +60,37 @@ def is_shortener_url(raw_url: str) -> bool:
         return domain_registered in URL_SHORTENERS or host in URL_SHORTENERS
     except Exception:
         return False
+
+
+def _registered_domain(host: str) -> str:
+    """Return the exact eTLD+1 used for context checks."""
+    ext = _TLD_EXTRACTOR((host or "").lower().rstrip("."))
+    return f"{ext.domain}.{ext.suffix}" if ext.domain and ext.suffix else ""
+
+
+def _should_gate_known_platform_false_positive(url: str, features: dict, phishing_prob: float) -> bool:
+    """Downgrade an ML-only alarm on a known platform when no strong URL signal exists.
+
+    This deliberately changes DANGEROUS to SUSPICIOUS, never SAFE. The fusion
+    layer can still promote the result when independent VirusTotal evidence agrees.
+    """
+    parsed = urlsplit(url)
+    root = _registered_domain(parsed.hostname or "")
+    if root not in KNOWN_PLATFORM_ROOTS or phishing_prob < 0.80:
+        return False
+    strong_flags = (
+        features.get("has_ip_host"),
+        features.get("has_at_symbol"),
+        features.get("has_punycode"),
+        features.get("nonstandard_port"),
+        features.get("suspicious_extension"),
+        features.get("brand_impersonation"),
+        features.get("many_hyphens_domain"),
+    )
+    if any(bool(flag) for flag in strong_flags):
+        return False
+    path_query = f"{parsed.path or ''}?{parsed.query or ''}".lower()
+    return not any(term in path_query for term in ("password", "passwd", "otp", "cvv", "card", "token"))
 
 # Preferred model is retrained LightGBM model, falling back to original model
 RETRAINED_MODEL_PATH = os.path.join(os.path.dirname(__file__), "nabeh_model_retrained.joblib")
@@ -387,21 +426,33 @@ def predict_url(url: str) -> dict:
         else:
             phishing_prob = _portable_predict_proba(model_bundle, values)
 
+        raw_classification = "UNKNOWN"
+        context_gated = False
         if phishing_prob >= threshold:
             classification = "DANGEROUS"
             confidence = phishing_prob
+            raw_classification = classification
+            if _should_gate_known_platform_false_positive(url, features, phishing_prob):
+                classification = "SUSPICIOUS"
+                confidence = min(0.79, phishing_prob)
+                context_gated = True
         elif phishing_prob >= (threshold * 0.6):
             classification = "SUSPICIOUS"
             confidence = phishing_prob
+            raw_classification = classification
         else:
             classification = "SAFE"
             confidence = 1.0 - phishing_prob
+            raw_classification = classification
 
         return {
             "classification": classification,
             "confidence": round(confidence, 4),
             "phishing_prob": round(phishing_prob, 4),
-            "source": "ML_MODEL"
+            # Keep the public source contract stable; expose the gate separately.
+            "source": "ML_MODEL",
+            "raw_classification": raw_classification,
+            "context_gated": context_gated,
         }
     except Exception:
         return {
