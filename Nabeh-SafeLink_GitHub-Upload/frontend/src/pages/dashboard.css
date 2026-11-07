@@ -1298,3 +1298,103 @@
     transform: none;
   }
 }
+
+
+.dashboard-page .dashboard-realtime-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex-wrap: wrap;
+  line-height: 1.45;
+}
+
+.dashboard-page .dashboard-realtime-status .welcome-status-dot {
+  flex: 0 0 8px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--color-warning, #d97706);
+}
+
+.dashboard-page .dashboard-realtime-status[data-status="connected"] .welcome-status-dot {
+  background: var(--color-success, #16a34a);
+}
+
+.dashboard-page .dashboard-realtime-status[data-status="disconnected"] .welcome-status-dot {
+  background: var(--color-danger, #dc2626);
+}
+
+.dashboard-page .dashboard-email-status {
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  padding: 6px 12px;
+  border: 1px solid var(--color-success-border, #86efac);
+  border-radius: 8px;
+  background: var(--color-success-bg, #f0fdf4);
+  color: var(--color-success, #15803d);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.dashboard-page .dashboard-email-status.is-unverified {
+  border-color: var(--color-warning-border, #fcd34d);
+  background: var(--color-warning-bg, #fffbeb);
+  color: var(--color-warning, #92400e);
+}
+
+.dashboard-page .dashboard-field-hint,
+.dashboard-page .dashboard-field-error {
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.5;
+}
+
+.dashboard-page .dashboard-field-hint {
+  color: var(--color-text-muted);
+}
+
+.dashboard-page .dashboard-field-error {
+  color: var(--color-danger, #b91c1c);
+}
+
+.dashboard-page input[aria-invalid="true"] {
+  outline: 2px solid var(--color-danger, #b91c1c);
+  outline-offset: 1px;
+}
+
+.dashboard-page .dashboard-consent-row {
+  align-items: center;
+  gap: 16px;
+  min-width: 0;
+}
+
+.dashboard-page .dashboard-consent-copy {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.dashboard-page .dashboard-consent-row button {
+  flex: 0 0 auto;
+  min-height: 44px;
+}
+
+@media (max-width: 540px) {
+  .dashboard-page .dashboard-profile-heading {
+    align-items: flex-start !important;
+    flex-wrap: wrap;
+    gap: 12px;
+  }
+
+  .dashboard-page .dashboard-consent-row {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .dashboard-page .dashboard-consent-row button {
+    width: 100%;
+  }
+}

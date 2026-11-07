@@ -2,7 +2,7 @@ import Logo from './Logo';
 import { ShieldCheckIcon, HelpCircleIcon, MailIcon, BookOpenIcon, InfoIcon, ShieldIcon, BarChartIcon } from './Icons';
 import { useLanguage } from '../context/LanguageContext';
 import { useAuth } from '../context/AuthContext';
-import { useNavigate } from 'react-router-dom';
+import { Link, useLocation } from 'react-router-dom';
 
 const ROUTE_MAP = {
   home: '/dashboard',
@@ -20,15 +20,13 @@ const ROUTE_MAP = {
 export default function Footer({ activeTab, setActiveTab }) {
   const { t, dir } = useLanguage();
   const { isGuest } = useAuth();
-  const navigate = useNavigate();
+  const location = useLocation();
   const currentYear = new Date().getFullYear();
 
+  const routeFor = (id) => (id === 'home' && isGuest ? '/welcome' : ROUTE_MAP[id] || '/scan');
+  const isCurrentPath = (path) => location.pathname === path;
   const handleNavigate = (id) => {
-    if (typeof setActiveTab === 'function') {
-      setActiveTab(id);
-    }
-    const targetPath = ROUTE_MAP[id] || (isGuest && id === 'home' ? '/welcome' : '/scan');
-    navigate(targetPath);
+    if (typeof setActiveTab === 'function') setActiveTab(id);
   };
 
   const supportLinks = [
@@ -42,7 +40,7 @@ export default function Footer({ activeTab, setActiveTab }) {
     { id: 'terms', label: dir === 'rtl' ? 'شروط الاستخدام' : 'Terms of use', path: '/terms' },
     { id: 'privacy', label: dir === 'rtl' ? 'سياسة الخصوصية' : 'Privacy policy', path: '/privacy' },
     { id: 'disclaimer', label: dir === 'rtl' ? 'إخلاء المسؤولية' : 'Disclaimer', path: '/disclaimer' },
-    ...(isGuest ? [] : [{ id: 'data', label: dir === 'rtl' ? 'إدارة بياناتي' : 'My data controls', path: '/settings/privacy' }]),
+    ...(!isGuest ? [{ id: 'data', label: dir === 'rtl' ? 'إدارة بياناتي' : 'My data controls', path: '/settings/privacy' }] : []),
   ];
 
   const quickLinks = isGuest
@@ -62,98 +60,99 @@ export default function Footer({ activeTab, setActiveTab }) {
   return (
     <footer className="app-footer" role="contentinfo" dir={dir}>
       <div className="footer-container">
-        {/* Brand & Mission Column */}
         <div className="footer-brand-section">
-          <button
-            type="button"
+          <Link
+            to={routeFor('home')}
             className="footer-logo-btn"
             onClick={() => handleNavigate('home')}
             aria-label={t('nav.goHome')}
           >
             <Logo size="sm" showTagline={false} />
-          </button>
+          </Link>
           <p className="footer-tagline">{t('footer.tagline')}</p>
-          <div className="footer-version-badge">
-            <ShieldCheckIcon size={14} color="#16A34A" />
-            <span>v1.0.0 MVP Stable</span>
-          </div>
         </div>
 
-        {/* Support & Resources Links Column */}
-        <div className="footer-links-column">
+        <nav className="footer-links-column" aria-label={t('footer.supportSection')}>
           <h3 className="footer-column-title">{t('footer.supportSection')}</h3>
           <ul className="footer-links-list">
             {supportLinks.map((item) => {
               const Icon = item.icon;
-              const isActive = activeTab === item.id;
+              const targetPath = routeFor(item.id);
+              const current = isCurrentPath(targetPath);
+              const active = activeTab === item.id || current;
               return (
                 <li key={item.id}>
-                  <button
-                    type="button"
-                    className={`footer-link-btn ${isActive ? 'active' : ''}`}
+                  <Link
+                    to={targetPath}
+                    className={`footer-link-btn ${active ? 'active' : ''}`}
                     onClick={() => handleNavigate(item.id)}
+                    aria-current={current ? 'page' : undefined}
                   >
-                    <Icon size={15} />
+                    <Icon size={15} aria-hidden="true" />
                     <span>{item.label}</span>
-                  </button>
+                  </Link>
                 </li>
               );
             })}
           </ul>
-        </div>
+        </nav>
 
-        {/* Quick Workspace Nav Links Column */}
-        <div className="footer-links-column">
+        <nav className="footer-links-column" aria-label={t('footer.quickLinksSection')}>
           <h3 className="footer-column-title">{t('footer.quickLinksSection')}</h3>
           <ul className="footer-links-list">
             {quickLinks.map((item) => {
               const Icon = item.icon;
-              const isActive = activeTab === item.id;
+              const targetPath = routeFor(item.id);
+              const current = isCurrentPath(targetPath);
+              const active = activeTab === item.id || current;
               return (
                 <li key={item.id}>
-                  <button
-                    type="button"
-                    className={`footer-link-btn ${isActive ? 'active' : ''}`}
+                  <Link
+                    to={targetPath}
+                    className={`footer-link-btn ${active ? 'active' : ''}`}
                     onClick={() => handleNavigate(item.id)}
+                    aria-current={current ? 'page' : undefined}
                   >
-                    <Icon size={15} />
+                    <Icon size={15} aria-hidden="true" />
                     <span>{item.label}</span>
-                  </button>
+                  </Link>
                 </li>
               );
             })}
           </ul>
-        </div>
+        </nav>
 
-        <div className="footer-links-column">
+        <nav className="footer-links-column" aria-label={dir === 'rtl' ? 'الحقوق والبيانات' : 'Legal and data'}>
           <h3 className="footer-column-title">{dir === 'rtl' ? 'الحقوق والبيانات' : 'Legal & data'}</h3>
           <ul className="footer-links-list">
-            {legalLinks.map((item) => (
-              <li key={item.id}>
-                <button type="button" className="footer-link-btn" onClick={() => navigate(item.path)}>
-                  <span>{item.label}</span>
-                </button>
-              </li>
-            ))}
+            {legalLinks.map((item) => {
+              const current = isCurrentPath(item.path);
+              return (
+                <li key={item.id}>
+                  <Link
+                    to={item.path}
+                    className={`footer-link-btn ${current ? 'active' : ''}`}
+                    aria-current={current ? 'page' : undefined}
+                  >
+                    <span>{item.label}</span>
+                  </Link>
+                </li>
+              );
+            })}
           </ul>
-        </div>
+        </nav>
 
-        {/* Security Notice Card */}
-        <div className="footer-notice-card">
+        <aside className="footer-notice-card" aria-label={t('footer.securityTitle')}>
           <div className="notice-card-header">
-            <ShieldCheckIcon size={18} color="var(--color-secondary)" />
+            <ShieldCheckIcon size={18} color="var(--color-secondary)" aria-hidden="true" />
             <span className="notice-card-title">{t('footer.securityTitle')}</span>
           </div>
-          <p className="footer-notice-text">
-            {t('footer.securityNotice')}
-          </p>
-        </div>
+          <p className="footer-notice-text">{t('footer.securityNotice')}</p>
+        </aside>
       </div>
 
       <div className="footer-bottom-bar">
-        <p className="footer-copyright">
-          {t('footer.rights', { year: currentYear })}
-        </p>
+        <p className="footer-copyright">{t('footer.rights', { year: currentYear })}</p>
       </div>
 
       <style>{`
@@ -171,8 +170,15 @@ export default function Footer({ activeTab, setActiveTab }) {
           max-width: 1280px;
           margin: 0 auto;
           display: grid;
-          grid-template-columns: 1.4fr 1fr 1fr 1.3fr;
-          gap: 32px;
+          grid-template-columns: minmax(0, 1.25fr) repeat(3, minmax(0, 1fr)) minmax(0, 1.25fr);
+          align-items: start;
+          gap: clamp(16px, 2.4vw, 30px);
+        }
+
+        .footer-brand-section,
+        .footer-links-column,
+        .footer-notice-card {
+          min-width: 0;
         }
 
         .footer-brand-section {
@@ -187,33 +193,24 @@ export default function Footer({ activeTab, setActiveTab }) {
         }
 
         .footer-logo-btn {
-          background: none;
-          border: none;
-          padding: 0;
-          cursor: pointer;
           display: inline-flex;
           align-items: center;
+          max-width: 100%;
+          padding: 0;
+          border: 0;
+          background: none;
+          color: inherit;
+          text-decoration: none;
+          cursor: pointer;
         }
 
         .footer-tagline {
+          max-width: 280px;
+          margin: 0;
           color: var(--color-text-secondary);
           font-size: 13px;
           line-height: 1.6;
-          margin: 0;
-          max-width: 280px;
-        }
-
-        .footer-version-badge {
-          display: inline-flex;
-          align-items: center;
-          gap: 6px;
-          padding: 5px 12px;
-          background: var(--color-bg-subtle);
-          border: 1px solid var(--color-border);
-          border-radius: var(--radius-md, 8px);
-          font-size: 12px;
-          font-weight: 600;
-          color: var(--color-text-muted);
+          overflow-wrap: anywhere;
         }
 
         .footer-links-column {
@@ -223,33 +220,40 @@ export default function Footer({ activeTab, setActiveTab }) {
         }
 
         .footer-column-title {
+          margin: 0;
+          color: var(--color-text);
           font-size: 15px;
           font-weight: 700;
-          color: var(--color-text);
-          margin: 0;
+          line-height: 1.5;
         }
 
         .footer-links-list {
-          list-style: none;
-          padding: 0;
-          margin: 0;
           display: flex;
           flex-direction: column;
-          gap: 10px;
+          gap: 8px;
+          margin: 0;
+          padding: 0;
+          list-style: none;
         }
 
         .footer-link-btn {
-          background: none;
-          border: none;
-          padding: 0;
-          font-family: inherit;
-          font-size: 13px;
-          font-weight: 500;
-          color: var(--color-text-secondary);
-          cursor: pointer;
           display: inline-flex;
           align-items: center;
           gap: 8px;
+          min-height: 34px;
+          max-width: 100%;
+          padding: 2px 0;
+          border: 0;
+          background: none;
+          color: var(--color-text-secondary);
+          font-family: inherit;
+          font-size: 13px;
+          font-weight: 500;
+          line-height: 1.5;
+          text-align: start;
+          text-decoration: none;
+          overflow-wrap: anywhere;
+          cursor: pointer;
           transition: color var(--transition-fast, 0.2s ease), transform var(--transition-fast, 0.2s ease);
         }
 
@@ -258,33 +262,43 @@ export default function Footer({ activeTab, setActiveTab }) {
           color: var(--color-secondary);
         }
 
+        .footer-link-btn:focus-visible,
+        .footer-logo-btn:focus-visible {
+          border-radius: 6px;
+          outline: 3px solid var(--color-secondary);
+          outline-offset: 4px;
+        }
+
         .footer-notice-card {
-          background: var(--color-bg-subtle);
-          border: 1px solid var(--color-border);
-          border-radius: var(--radius-lg, 12px);
-          padding: 18px;
           display: flex;
           flex-direction: column;
           gap: 10px;
+          padding: 18px;
+          border: 1px solid var(--color-border);
+          border-radius: var(--radius-lg, 12px);
+          background: var(--color-bg-subtle);
         }
 
         .notice-card-header {
           display: flex;
           align-items: center;
           gap: 8px;
+          min-width: 0;
         }
 
         .notice-card-title {
+          color: var(--color-text);
           font-size: 13px;
           font-weight: 700;
-          color: var(--color-text);
+          overflow-wrap: anywhere;
         }
 
         .footer-notice-text {
           margin: 0;
+          color: var(--color-text-muted);
           font-size: 12px;
           line-height: 1.65;
-          color: var(--color-text-muted);
+          overflow-wrap: anywhere;
         }
 
         .footer-bottom-bar {
@@ -297,25 +311,34 @@ export default function Footer({ activeTab, setActiveTab }) {
 
         .footer-copyright {
           margin: 0;
+          color: var(--color-text-muted);
           font-size: 12px;
           font-weight: 500;
-          color: var(--color-text-muted);
         }
 
-        @media (max-width: 992px) {
+        @media (max-width: 1100px) {
           .footer-container {
-            grid-template-columns: 1fr 1fr;
-            gap: 28px;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 26px;
+          }
+
+          .footer-notice-card {
+            grid-column: 1 / -1;
           }
         }
 
         @media (max-width: 600px) {
+          .app-footer {
+            padding: 36px 16px 88px;
+          }
+
           .footer-container {
-            grid-template-columns: 1fr;
+            grid-template-columns: minmax(0, 1fr);
             gap: 24px;
           }
-          .app-footer {
-            padding: 36px 16px 88px; /* Extra bottom clearance for mobile bottom nav */
+
+          .footer-notice-card {
+            grid-column: auto;
           }
         }
       `}</style>
