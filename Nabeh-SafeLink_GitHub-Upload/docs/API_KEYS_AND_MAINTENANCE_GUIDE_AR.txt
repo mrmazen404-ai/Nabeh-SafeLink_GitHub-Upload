@@ -1,0 +1,449 @@
+دليل Nabeh SafeLink
+الحصول على مفاتيح الخدمات وإعداد متغيرات البيئة وتشخيص وضع الصيانة
+تاريخ إعداد الدليل: 3 نوفمبر 2026
+
+======================================================================
+1) الجواب المباشر: لماذا ظهرت الصيانة دون أن يفعّلها الأدمن؟
+======================================================================
+
+في نسخة سابقة من المشروع كان هناك مسار احتياطي داخل
+backend/app/system_settings.py يضبط maintenance_mode إلى true إذا وصلت
+إليه حالة SystemSettingsUnavailable. هذا سلوك غير صحيح: تعذّر قراءة الإعدادات
+لا يعني أن الأدمن فعّل الصيانة.
+
+إذا كانت إعدادات Supabase ناقصة أو خاطئة، أو تعذرت قراءة جدول الإعدادات، فقد
+يفشل الخادم في تحميل system.maintenance_mode. ومن ثم قد يدخل التطبيق في مسار
+الخطأ السابق ويعرض صفحة الصيانة من دون تغيير الأدمن. لذلك فإن نقص متغيرات
+Supabase أو سوء ضبطها سبب محتمل ومهم يجب فحصه.
+
+لكن لا أستطيع أن أؤكد من دون سجل بيئة الإنتاج أن المتغيرات كانت هي السبب الفعلي
+في موقعك. في النسخة السابقة كانت دالة قراءة قاعدة البيانات تلتقط بعض أخطاء
+القراءة العامة وتعيد القيم الافتراضية؛ لذلك ليس كل خطأ أو متغير مفقود يصل حتمًا
+إلى مسار SystemSettingsUnavailable. كما أن غياب SUPABASE_URL أو
+SUPABASE_SECRET_KEY قد يمنع إنشاء عميل Supabase عند بدء الخادم، وينتج عنه
+خطأ تشغيل 500 بدل صفحة الصيانة. كذلك قد ينتج تعذر قراءة الإعدادات عن خطأ
+الصلاحيات أو غياب ترحيل SQL أو اختيار مشروع Supabase غير الصحيح.
+
+في المعاينة المحلية السابقة استُخدمت قيم اختبار، ومنها عنوان
+https://test.supabase.co ومفاتيح وهمية؛ لذلك لم تستطع المعاينة قراءة إعدادات
+قاعدة حقيقية. ظهور «تعذر الخدمة» هناك يثبت نتيجة إعداد الاختبار المحلي فقط،
+ولا يثبت أن متغيرات موقع الإنتاج كانت ناقصة.
+
+الخلاصة الدقيقة:
+- الخلل البرمجي المؤكد كان تحويل حالة تعذّر الإعدادات إلى maintenance_mode=true.
+- متغيرات Supabase الناقصة أو غير الصحيحة قد تكون السبب الذي أوصل النظام إلى
+  تعذّر قراءة الإعدادات، لكنها ليست تشخيصًا مؤكدًا لبيئة الإنتاج دون السجلات.
+- عطل Gemini أو VirusTotal أو EmailJS أو Upstash وحده لا ينبغي أن يفعّل الصيانة.
+- في الإصلاح الحالي، عند تعذّر قراءة إعدادات النظام تكون النتيجة:
+  service_available=false وmaintenance_mode=false. تعرض الواجهة رسالة
+  تعذّر خدمة منفصلة، ولا تسميها وضع الصيانة.
+- لا تظهر صفحة الصيانة إلا إذا قرأ الخادم من الإعدادات المحفوظة أن
+  system.maintenance_mode=true، أي بعد قرار إداري صريح.
+
+دليل الشيفرة في المشروع:
+- backend/app/system_settings.py: قراءة الإعدادات العامة وقيمة الصيانة.
+- backend/app/config.py: أسماء متغيرات البيئة ومتطلبات بيئة production.
+- backend/app/db/supabase_client.py: إنشاء عميل Supabase من SUPABASE_URL
+  وSUPABASE_SECRET_KEY.
+- backend/sql/admin_system_settings.sql: إنشاء إعدادات النظام وقيمها وRPC.
+- docs/admin/ADMIN_SYSTEM_SETTINGS.md: خطوات ترحيل قاعدة بيانات الإعدادات.
+
+======================================================================
+2) قبل استخراج أي مفتاح: اختر المشروع الصحيح واحمِ بياناتك
+======================================================================
+
+1. لا ترسل أي مفتاح أو كلمة مرور أو ملف .env في المحادثة أو لقطة شاشة.
+2. لا تضع مفتاحًا سريًا في GitHub أو في الواجهة الأمامية أو داخل متغير يبدأ
+   اسمه VITE_. متغيرات VITE_ تدخل في ملفات الواجهة التي تصل إلى المتصفح.
+3. استخدم ملف .env.example كقائمة أسماء فقط. انسخه إلى .env محليًا ثم استبدل
+   القيم التجريبية بقيمك. ملف .env لا يُرفع إلى Git.
+4. لا تستخدم بيانات مشروع الاختبار test.supabase.co في الإنتاج. يجب أن يكون
+   عنوان URL والمفتاح تابعين لمشروع Supabase نفسه.
+5. أنشئ قيمة مختلفة لكل سر. لا تعِد استخدام كلمة مرور واحدة في مفاتيح JWT
+   وOTP وTOTP وRate Limit.
+6. إذا انكشف مفتاح خدمة، ألغِه أو دوّره من لوحة الخدمة، حدّث متغير البيئة،
+   ثم أنشئ نشرًا جديدًا. لا تكتفِ بحذف المفتاح من آخر نسخة من الشيفرة.
+
+======================================================================
+3) مفاتيح الخدمات الخارجية المستخدمة أو المذكورة في المشروع
+======================================================================
+
+أ) Supabase — الاتصال بقاعدة البيانات
+
+المتغيرات:
+SUPABASE_URL
+SUPABASE_SECRET_KEY
+SUPABASE_PUBLISHABLE_KEY
+
+طريقة الحصول عليها:
+1. سجّل الدخول إلى Supabase وافتح مشروع قاعدة البيانات الصحيح.
+2. من زر Connect انسخ Project URL. ضع القيمة في SUPABASE_URL.
+3. افتح Settings ثم API Keys. استخدم المفتاح من قسم Publishable and
+   secret API keys.
+4. انسخ sb_publishable_... إلى SUPABASE_PUBLISHABLE_KEY.
+5. انسخ sb_secret_... إلى SUPABASE_SECRET_KEY. إذا كان المشروع يستخدم
+   المفاتيح القديمة، فالمفتاح القديم service_role يقابل الاستخدام الخلفي
+   ذي الصلاحيات المرتفعة. استخدم مفتاحًا من المشروع نفسه، ولا تخلط مشاريع.
+
+ما الذي يستخدمه Nabeh؟
+- backend/app/db/supabase_client.py ينشئ عميل قاعدة البيانات باستخدام
+  SUPABASE_URL وSUPABASE_SECRET_KEY. هذا المفتاح للخادم فقط، وله صلاحيات
+  حساسة وقد يتجاوز سياسات RLS؛ لا تضعه في المتصفح مطلقًا.
+- SUPABASE_PUBLISHABLE_KEY موجود في قالب البيئة ويُقرأ في إعدادات backend،
+  لكن البحث في الشيفرة الحالية لم يجد استعمالًا تشغيليًا له. احتفظ به في
+  القالب عند الحاجة، لكنه لا يحل محل SUPABASE_SECRET_KEY للعمليات الخلفية.
+- SUPABASE_JWKS_URL موجود في .env.example، لكن لم يُعثر على قارئ له في
+  الشيفرة الحالية؛ لا تعتمد عليه باعتباره بديلًا لمتغيرات Supabase الأساسية.
+- لا تعطّل مفاتيح service_role القديمة قبل التأكد أن التطبيق انتقل فعلًا
+  إلى المفاتيح الجديدة وأن النشر الجديد يعمل.
+
+بعد إضافة المفاتيح، طبّق مخطط قاعدة البيانات المطلوب. توثيق المشروع يطلب
+المخطط الأساسي وadmin_schema.sql ثم admin_system_settings.sql مرة واحدة.
+إذا كان جدول public.system_settings أو RPC المطلوب غير موجود، فلن يكفي
+وجود المفاتيح وحده لقراءة إعداد الصيانة.
+
+أثر النقص: SUPABASE_URL وSUPABASE_SECRET_KEY هما الأكثر ارتباطًا بقراءة
+إعدادات النظام. نقصهما أو خطؤهما قد يمنع الاتصال أو بدء التطبيق. هذا لا يعني
+أن كل خطأ في Supabase هو وضع صيانة إداري.
+
+ب) Google Gemini API — تحليل الذكاء الاصطناعي
+
+المتغير الأساسي:
+GEMINI_API_KEY
+
+بديل يتعرف عليه كود التكامل عند غياب الأساسي:
+GOOGLE_API_KEY
+
+طريقة الحصول على المفتاح:
+1. سجّل الدخول إلى Google AI Studio.
+2. افتح صفحة API Keys.
+3. اختر مشروع Google Cloud المناسب أو استورده إذا لم يظهر في القائمة.
+4. أنشئ API key وانسخ القيمة إلى GEMINI_API_KEY في إعدادات الخادم.
+5. لا تنشر المفتاح في الشيفرة أو في React أو في متغير VITE_*. قيّده بخدمة
+   Gemini API متى أتاح إعداد Google ذلك، وراقب الاستخدام والحصص.
+
+في هذا المشروع GEMINI_API_KEY هو الاسم الأساسي، وGOOGLE_API_KEY بديل عند
+غياب الأساسي. لا تضع قيمتين مختلفتين للاسمين.
+
+أثر النقص: كود المشروع لديه مسار احتياطي محلي عند غياب مفتاح Gemini. قد تتعطل
+ميزة التفسير أو تعمل بشكل محدود، لكن هذا المفتاح ليس المفتاح الذي يقرر
+maintenance_mode.
+
+ج) VirusTotal — فحص السمعة والتهديدات
+
+المتغير:
+VIRUSTOTAL_API_KEY
+
+طريقة الحصول على المفتاح:
+1. أنشئ حساب VirusTotal Community وسجّل الدخول.
+2. افتح صفحة API key الخاصة بحسابك:
+   https://www.virustotal.com/gui/my-apikey
+3. انسخ المفتاح الشخصي وضعه في VIRUSTOTAL_API_KEY على الخادم.
+4. استخدمه عبر HTTPS وفي ترويسة x-apikey. لا تضعه في الواجهة.
+
+مهم: المفتاح العام لحساب Community له حصص وشروط استخدام محدودة. توثيق
+VirusTotal يذكر أن الحصة العامة المعتادة للـPublic API هي 4 طلبات في الدقيقة
+و500 طلب يوميًا، وقد تتغير السياسة؛ راجع صفحة الحصص وقت الاستخدام. كما يحظر
+استعمالها كبديل تجاري لمنتج مكافحة فيروسات أو في استخدامات تجارية لا يسمح بها
+الترخيص. إذا كان Nabeh خدمة عامة أو تجارية، راجع شروط API الحالية وخطة
+VirusTotal المناسبة قبل الاعتماد على المفتاح المجاني.
+
+أثر النقص: VIRUSTOTAL_API_KEY مطلوب في فحص التحقق البرمجي لبيئة production
+في backend/app/config.py؛ فقد يؤدي غيابه إلى فشل التحقق من بدء الخادم. هذا
+ليس تفعيلًا إداريًا للصيانة. كما قد تصبح نتيجة VirusTotal غير متاحة حتى لو
+كان باقي التطبيق يعمل.
+
+د) Upstash Redis REST — محدد معدل الطلبات
+
+المتغيرات:
+UPSTASH_REDIS_REST_URL
+UPSTASH_REDIS_REST_TOKEN
+NABEH_RATE_LIMIT_SALT
+
+طريقة الحصول على بيانات Upstash:
+1. أنشئ حسابًا في Upstash وافتح Console.
+2. اختر Redis ثم Create Database، وحدد اسمًا ومنطقة وخطة مناسبة.
+3. افتح قاعدة البيانات ثم Connect أو REST. انسخ HTTPS REST URL إلى
+   UPSTASH_REDIS_REST_URL.
+4. انسخ REST token إلى UPSTASH_REDIS_REST_TOKEN. محددات الطلبات تكتب
+   عدادات، لذلك استخدم رمزًا يسمح بالكتابة؛ لا تستخدم Read Only token.
+5. أنشئ NABEH_RATE_LIMIT_SALT منفصلًا كما هو موضح في قسم الأسرار الداخلية.
+   هذا ليس مفتاحًا صادرًا من Upstash ولا يجوز وضع رمز Upstash مكانه.
+
+أثر النقص: عدم إعداد Upstash لا يعني وضع صيانة. لكنه قد يؤدي في الإنتاج،
+بحسب إعداد fail-closed، إلى رفض بعض طلبات فحص الضيف أو الطلبات المحمية بمحدد
+المعدل بدل تمريرها. لا تستخدم عنوان قاعدة Upstash المكتوب في قالب المثال؛
+أنشئ قاعدة خاصة بك وانسخ بياناتها.
+
+هـ) EmailJS — إرسال رموز البريد الإلكتروني
+
+المتغيرات الأربعة:
+EMAILJS_SERVICE_ID
+EMAILJS_TEMPLATE_ID
+EMAILJS_PUBLIC_KEY
+EMAILJS_PRIVATE_KEY
+
+طريقة الحصول على القيم:
+1. سجّل الدخول إلى لوحة EmailJS.
+2. افتح Email Services واختر خدمة البريد المتصلة. انسخ Service ID.
+3. افتح Email Templates واختر القالب المستخدم لرمز التسجيل أو الاستعادة.
+   انسخ Template ID من صفحة إعدادات القالب.
+4. من صفحة الحساب Account انسخ Public Key وضعه في EMAILJS_PUBLIC_KEY.
+5. إذا كان التكامل يستخدم المفتاح الخاص، فعّل Private Key من إعدادات أمان
+   الحساب Account > Security ثم خزّن قيمته في EMAILJS_PRIVATE_KEY.
+
+في Nabeh، backend/app/auth/emailjs.py يتحقق من وجود القيم الأربعة كلها
+قبل إرسال OTP. إذا نقص واحد منها يفشل إرسال البريد برسالة
+email_delivery_not_configured. لا يفعّل ذلك وضع الصيانة العام، لكنه يعطل
+إرسال رمز البريد أو استعادة الحساب.
+
+EMAILJS_PUBLIC_KEY ليس مساويًا للمفتاح الخاص. EMAILJS_PRIVATE_KEY سرّ خادمي؛
+لا تضفه إلى الواجهة ولا إلى أي متغير VITE_.
+
+======================================================================
+4) أسرار ينشئها مالك التطبيق — ليست مفاتيح API لمزود خارجي
+======================================================================
+
+هذه القيم تُنشأ عشوائيًا، ولا تُؤخذ من Supabase أو Google أو غيرهما.
+أنشئ قيمة منفصلة لكل متغير ولا تكتب القيمة الناتجة في GitHub.
+
+AUTH_JWT_SECRET
+يوقّع جلسات المستخدمين. يجب أن يكون قويًا وفريدًا. تغييره قد يبطل الجلسات
+والرموز الموجودة.
+
+AUTH_OTP_PEPPER
+سر داخلي لحماية بصمة OTP. أنشئ قيمة قوية وفريدة. تغييره قد يؤثر في رموز
+التحقق القائمة؛ نفّذ التغيير عند الحاجة مع اختبار تسجيل الدخول والبريد.
+
+ADMIN_JWT_SECRET
+يوقّع رموز المدير. في production يجب ألا يقل عن 32 حرفًا. تغييره يبطل
+رموز المدير الحالية.
+
+ADMIN_BOOTSTRAP_TOKEN
+رمز سري لتهيئة المدير الأساسي. في production يجب ألا يقل عن 32 حرفًا.
+استخدمه فقط في مسار التهيئة الموثق، ولا ترسله للمستخدمين. بعد إنشاء المدير
+الأول، راجع آلية التهيئة في المشروع ودوّره أو أزله إذا لم تعد هناك حاجة له.
+
+ADMIN_IP_SALT
+سر لتجزئة بيانات الشبكة في سجل التدقيق. في production لا يقل عن 32 حرفًا.
+
+ADMIN_TOTP_ENCRYPTION_KEY
+مفتاح Fernet لتشفير أسرار TOTP. يجب أن يكون مفتاح Fernet صالحًا، لا مجرد
+نص عشوائي. لا تدوّره دون خطة لإعادة تشفير أسرار TOTP المخزنة.
+
+VISITOR_HASH_SALT
+مفتاح داخلي لتجزئة معرفات الزوار. يلزم أن يكون طوله 32 حرفًا على الأقل كي
+يعمل تسجيل الزيارة في الكود الحالي. تغييره يغيّر بصمات الزوار الجديدة.
+
+NABEH_RATE_LIMIT_SALT
+سر داخلي لتجزئة هوية العميل في مفاتيح Redis. في production يجب أن يكون
+طوله 32 حرفًا على الأقل. لا تعِد استخدام ADMIN_IP_SALT أو مفاتيح أخرى.
+
+طريقة إنشاء قيمة عشوائية مستقلة لكل سر نصّي:
+python -c "import secrets; print(secrets.token_urlsafe(48))"
+
+شغّل الأمر مرة لكل متغير، ثم خزّن كل ناتج تحت اسمه الصحيح في مخزن الأسرار.
+لا تضع قيمة واحدة لكل المتغيرات.
+
+إنشاء ADMIN_TOTP_ENCRYPTION_KEY بصيغة Fernet:
+python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+
+متغيرات غير سرية لكنها مطلوبة لضبط بيئة production:
+NABEH_ENVIRONMENT=production
+NABEH_TRUST_MODEL_ARTIFACT=1
+NABEH_CORS_ALLOWED_ORIGINS=https://intellidefenda.com,https://www.intellidefenda.com
+NABEH_TRUST_PROXY_HEADERS=true
+
+عيّن NABEH_ENVIRONMENT صراحة إلى production في بيئة الإنتاج. إذا تُرك بلا
+قيمة، فالكود يختار development افتراضيًا وقد لا يشغّل فحوص الأمان الخاصة
+بالإنتاج. لا تستخدم CORS الخاص بـ localhost على موقع الإنتاج. أضف فقط أصول
+المواقع التي تملكها، ومن دون مسارات صفحات.
+
+متغيرات اختيارية لضبط المعدلات والمهل تشمل:
+NABEH_GUEST_RATE_LIMIT
+NABEH_GUEST_RATE_WINDOW_SECONDS
+NABEH_LOGIN_RATE_LIMIT_FAIL_CLOSED
+NABEH_PUBLIC_METRICS_FAIL_CLOSED
+NABEH_PUBLIC_METRICS_RATE_LIMIT
+NABEH_PUBLIC_METRICS_RATE_WINDOW_SECONDS
+SCAN_AI_TIMEOUT_SECONDS
+SCAN_TOTAL_TIMEOUT_SECONDS
+
+لا تحتاج إلى اختراع قيمة لهذه المتغيرات الاختيارية كي تختبر إعداد الصيانة؛
+راجع القيم الافتراضية في الشيفرة قبل تغييرها.
+
+======================================================================
+5) إضافة القيم إلى Vercel بأمان
+======================================================================
+
+1. افتح Vercel واختر الفريق الصحيح.
+2. افتح مشروع Nabeh SafeLink الصحيح. يوجد في المستودع مجلد المشروع
+   Nabeh-SafeLink_GitHub-Upload؛ تحقق من Root Directory للمشروع ولا تضف القيم
+   إلى مشروع Vercel آخر بالخطأ.
+3. افتح Settings ثم Environment Variables.
+4. أضف كل متغير باسمه الحرفي كما هو مكتوب في هذا الدليل. الصق القيمة فقط،
+   بلا نصوص تجريبية مثل replace_with... وبلا مسافات قبلها أو بعدها.
+5. اختر البيئة: Production للإنتاج. استخدم Preview لقيم بيئة اختبار منفصلة
+   وقاعدة بيانات staging عند اختبار Preview. لا تضع أسرار الإنتاج في Preview
+   إلا إذا كنت تقصد ذلك وتفهم أثره. اختر Development فقط إذا كنت تحتاج سحبها
+   محليًا.
+6. اجعل مفاتيح API والـtokens والأسرار على أنها Sensitive/Secret متى ظهر
+   هذا الخيار. المتغيرات التي تبدأ VITE_ ليست مكانًا لأي سر.
+7. بعد الحفظ أنشئ نشرًا جديدًا. تغيير Environment Variables لا يغيّر نشرًا
+   سابقًا بأثر رجعي؛ يجب أن تُبنى نسخة جديدة لتقرأ القيم الجديدة.
+8. بعد النشر، افحص السجلات دون نسخ قيم المفاتيح إلى تذكرة دعم أو محادثة.
+
+إذا استخدمت واجهة Vercel CLI، اعرض أسماء المتغيرات فقط بحذر. لا تضع القيمة
+الحقيقية داخل أمر ظاهر في سجل الطرفية أو في history. لا ترفق مخرجات تحتوي
+أسرارًا.
+
+متغيرات الواجهة:
+VITE_API_URL وVITE_ADMIN_API_URL إعدادات عناوين API وليستا مفاتيح اعتماد.
+في نشر الواجهة والخادم على النطاق نفسه يستخدم المشروع مسارات API داخلية
+افتراضيًا. لا تضف SUPABASE_SECRET_KEY أو GEMINI_API_KEY أو أي سر إلى
+VITE_API_URL أو VITE_ADMIN_API_URL أو أي متغير يبدأ VITE_.
+
+======================================================================
+6) أقل مجموعة مهمة لفحص عطل قراءة الإعدادات
+======================================================================
+
+ابدأ بهذه القيم في بيئة Production الصحيحة:
+
+SUPABASE_URL
+SUPABASE_SECRET_KEY
+NABEH_ENVIRONMENT=production
+NABEH_TRUST_MODEL_ARTIFACT=1
+VIRUSTOTAL_API_KEY
+ADMIN_JWT_SECRET
+ADMIN_BOOTSTRAP_TOKEN
+ADMIN_IP_SALT
+ADMIN_TOTP_ENCRYPTION_KEY
+NABEH_RATE_LIMIT_SALT
+NABEH_CORS_ALLOWED_ORIGINS
+AUTH_JWT_SECRET
+AUTH_OTP_PEPPER
+
+ثم أضف مفاتيح الخدمات التي تحتاج ميزاتها:
+GEMINI_API_KEY
+UPSTASH_REDIS_REST_URL
+UPSTASH_REDIS_REST_TOKEN
+VISITOR_HASH_SALT
+EMAILJS_SERVICE_ID
+EMAILJS_TEMPLATE_ID
+EMAILJS_PUBLIC_KEY
+EMAILJS_PRIVATE_KEY
+
+هذه قائمة مبنية على فحص الشيفرة وقالب .env.example، وليست ادعاء بأن كل
+تكامل اختياري شرط لعرض الصفحة. مفتاح VirusTotal وبعض أسرار المدير وSupabase
+مطلوبة صراحة في تحقق production داخل backend/app/config.py. إرسال البريد
+يعتمد على EmailJS. Gemini له مسار احتياطي. Upstash مرتبط بمحددات المعدل.
+
+======================================================================
+7) كيف تميّز النتيجة بعد الإعداد؟
+======================================================================
+
+أ) الإعدادات مقروءة والصيانة مطفأة:
+GET /api/v1/public/runtime-config
+تكون النتيجة المتوقعة:
+service_available=true
+maintenance_mode=false
+تعمل الواجهة العادية ولا تظهر صفحة الصيانة.
+
+ب) الإعدادات مقروءة والأدمن فعّل الصيانة:
+service_available=true
+maintenance_mode=true
+تظهر صفحة الصيانة. تحقق من قيمة system.maintenance_mode في لوحة الأدمن أو
+سجل SYSTEM_SETTINGS_UPDATED؛ لا تغيّر قاعدة البيانات يدويًا لتجاوز لوحة الأدمن.
+
+ج) الإعدادات غير قابلة للقراءة:
+في الإصلاح الحالي تكون النتيجة:
+service_available=false
+maintenance_mode=false
+تعرض الواجهة رسالة تعذر الخدمة، ولا تعرض رسالة الصيانة.
+ترجع طلبات API التشغيلية 503 بدل الاستمرار دون سياسة إعدادات مؤكدة.
+
+د) endpoint يعيد 500 أو FUNCTION_INVOCATION_FAILED:
+هذا غالبًا عطل بدء/استيراد/تهيئة أو استدعاء خادم، وليس دليلًا وحده على
+أن maintenance_mode مفعّل. راجع سجلات البناء وسجلات الوظيفة بحثًا عن اسم
+المتغير الناقص أو فشل استيراد Python، ولا تفترض أن السبب هو Gemini أو خدمة
+أخرى لمجرد أن مفتاحها غير موجود.
+
+افحص أيضًا أن ترحيل قاعدة البيانات backend/sql/admin_system_settings.sql
+طُبّق على المشروع الصحيح، وأن خدمة backend تستخدم SUPABASE_SECRET_KEY
+للقراءة والكتابة المسموحتين، وأن قيم Production موجودة ضمن نطاق Production
+في Vercel. بعد حفظ إعدادات الأدمن، انتظر مهلة التخزين المؤقت القصيرة ثم أعد
+قراءة runtime-config.
+
+======================================================================
+8) قائمة تحقق قبل اعتبار السبب محلولًا
+======================================================================
+
+[ ] اخترت Vercel Project والفريق وEnvironment الصحيحة.
+[ ] SUPABASE_URL وSUPABASE_SECRET_KEY من مشروع Supabase نفسه.
+[ ] لا أستخدم قيم test.supabase.co أو replace_with... في الإنتاج.
+[ ] شغّلت المخطط الأساسي وadmin_schema.sql وadmin_system_settings.sql.
+[ ] NABEH_ENVIRONMENT=production في بيئة الإنتاج.
+[ ] أضفت مفاتيح production المطلوبة حسب backend/app/config.py.
+[ ] حفظت المفاتيح كـ Secret ولم أضعها في VITE_ أو GitHub.
+[ ] أنشأت نشرًا جديدًا بعد إضافة القيم.
+[ ] runtime-config يعيد service_available=true إذا كانت قاعدة الإعدادات سليمة.
+[ ] maintenance_mode=false عندما تكون الصيانة غير مفعلة من الأدمن.
+[ ] لم أخلط بين تعطل خدمة خارجية وبين maintenance_mode.
+[ ] راجعت سجل الخادم قبل أن أقرر أن غياب متغير محدد هو السبب النهائي.
+
+======================================================================
+9) المصادر الرسمية
+======================================================================
+
+[1] Supabase API keys
+https://supabase.com/docs/guides/getting-started/api-keys
+
+[2] نقل Supabase إلى مفاتيح Publishable وSecret
+https://supabase.com/docs/guides/getting-started/migrating-to-new-api-keys
+
+[3] Gemini API keys — Google AI for Developers
+https://ai.google.dev/gemini-api/docs/api-key
+
+[4] Gemini API quickstart
+https://ai.google.dev/gemini-api/docs/quickstart
+
+[5] أفضل ممارسات إدارة مفاتيح Google Cloud
+https://docs.cloud.google.com/docs/authentication/api-keys-best-practices
+
+[6] بدء استخدام VirusTotal
+https://docs.virustotal.com/docs/getting-started
+
+[7] مفتاح VirusTotal الشخصي
+https://docs.virustotal.com/docs/please-give-me-an-api-key
+
+[8] الفرق بين VirusTotal Public API وPremium API
+https://docs.virustotal.com/reference/public-vs-premium-api
+
+[9] بدء قاعدة Redis في Upstash
+https://upstash.com/docs/redis/overall/getstarted
+
+[10] Upstash Redis REST API
+https://upstash.com/docs/redis/features/restapi
+
+[11] توصيل خدمة بريد في EmailJS
+https://www.emailjs.com/docs/user-guide/connecting-email-services/
+
+[12] إنشاء قالب EmailJS
+https://www.emailjs.com/docs/tutorial/creating-email-template/
+
+[13] واجهة إرسال EmailJS
+https://www.emailjs.com/docs/rest-api/send/
+
+[14] توثيق EmailJS حول Public Key
+https://www.emailjs.com/docs/faq/is-it-okay-to-expose-my-public-key/
+
+[15] إدارة متغيرات البيئة في Vercel
+https://vercel.com/docs/environment-variables/managing-environment-variables
+
+[16] المتغيرات الحساسة في Vercel
+https://vercel.com/docs/environment-variables/sensitive-environment-variables
+
+[17] أوامر متغيرات البيئة في Vercel CLI
+https://vercel.com/docs/cli/env
+
+نهاية الدليل.
