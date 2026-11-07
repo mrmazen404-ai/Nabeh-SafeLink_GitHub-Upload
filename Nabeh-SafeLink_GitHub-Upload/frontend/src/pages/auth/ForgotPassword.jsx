@@ -1,9 +1,10 @@
-import { useEffect, useRef, useState } from 'react';
+import { useState } from 'react';
 import Logo from '../../components/Logo';
 import { useAuth } from '../../context/AuthContext';
-import { ArrowLeftIcon, ArrowRightIcon, CheckCircleIcon } from '../../components/Icons';
+import { AlertTriangleIcon, ArrowLeftIcon, ArrowRightIcon } from '../../components/Icons';
 import { useLanguage } from '../../context/LanguageContext';
 import AuthPageControls from '../../components/AuthPageControls';
+import { isValidEmail, normalizeEmail } from './authValidation';
 import './login.css';
 import './forgot-password.css';
 
@@ -17,35 +18,50 @@ export default function ForgotPassword({ onNavigate }) {
   const [email, setEmail] = useState('');
   const [loading, setLoading] = useState(false);
   const [submitted, setSubmitted] = useState(false);
-  const [message, setMessage] = useState('');
-  const timerRef = useRef(null);
-
-  useEffect(() => {
-    return () => {
-      if (timerRef.current) clearTimeout(timerRef.current);
-    };
-  }, []);
+  const [error, setError] = useState('');
 
   const handleSubmit = async (event) => {
     event.preventDefault();
-    if (!email.trim()) return;
+    const normalizedEmail = normalizeEmail(email);
+    if (!normalizedEmail) {
+      setError(t('auth.requiredFields'));
+      return;
+    }
+    if (!isValidEmail(normalizedEmail)) {
+      setError(t('auth.invalidEmail'));
+      return;
+    }
 
+    setError('');
     setLoading(true);
     try {
-      const response = await forgotPassword(email.trim());
-      setMessage(response.message || t('auth.checkInbox'));
+      const response = await forgotPassword(normalizedEmail);
+      if (response?.success === false) {
+        setError(t('auth.recoveryRequestError'));
+        return;
+      }
+      // Keep the response generic so the UI does not disclose whether an account exists.
+      setEmail(normalizedEmail);
       setSubmitted(true);
-      timerRef.current = setTimeout(() => onNavigate('verify-otp', { email: email.trim(), type: 'recovery' }), 1800);
-    } catch {
-      // Keep the same privacy-preserving response for existing and unknown emails.
-      setMessage(t('auth.checkInbox'));
-      setSubmitted(true);
-      timerRef.current = setTimeout(() => onNavigate('verify-otp', { email: email.trim(), type: 'recovery' }), 1800);
+    } catch (requestError) {
+      const status = requestError?.response?.status;
+      setError(
+        status === 429
+          ? t('auth.recoveryRateLimited')
+          : status === 503
+            ? t('auth.emailDeliveryError')
+            : !requestError?.response
+              ? t('auth.networkError')
+              : status >= 500
+                ? t('auth.serviceUnavailable')
+                : t('auth.recoveryRequestError'),
+      );
     } finally {
       setLoading(false);
     }
   };
 
+  const SubmitArrow = dir === 'rtl' ? ArrowLeftIcon : ArrowRightIcon;
   const BackIcon = dir === 'rtl' ? ArrowRightIcon : ArrowLeftIcon;
 
   return (
@@ -60,19 +76,27 @@ export default function ForgotPassword({ onNavigate }) {
         </section>
 
         {submitted ? (
-          <section className="forgot-success" role="status" aria-live="polite">
-            <span className="forgot-success-icon"><CheckCircleIcon size={24} color="currentColor" /></span>
-            <h2>{t('auth.checkInbox')}</h2>
-            <p>{message}</p>
-            <button type="button" className="forgot-code-button" onClick={() => onNavigate('verify-otp', { email: email.trim(), type: 'recovery' })}>{t('auth.enterRecovery')}</button>
+          <section className="forgot-response" role="status" aria-live="polite" aria-labelledby="forgot-response-title">
+            <span className="forgot-response-icon" aria-hidden="true"><MailIcon size={24} color="currentColor" /></span>
+            <h2 id="forgot-response-title">{t('auth.recoveryRequestReceived')}</h2>
+            <p>{t('auth.recoveryInstructions')}</p>
+            <strong className="forgot-email" dir="ltr">{email}</strong>
+            <button type="button" className="forgot-code-button" onClick={() => onNavigate('verify-otp', { email, type: 'recovery' })}>{t('auth.continueIfCodeReceived')}</button>
           </section>
         ) : (
-          <form className="login-form" onSubmit={handleSubmit} noValidate>
-            <label className="login-field">
-              <span className="login-field-icon"><MailIcon size={19} color="currentColor" /></span>
-              <input type="email" dir={dir} autoComplete="email" placeholder={t('auth.emailAddress')} value={email} onChange={(event) => setEmail(event.target.value)} aria-label={t('auth.emailAddress')} required />
-            </label>
-            <button className="login-submit" type="submit" disabled={loading || !email.trim()}><span>{loading ? '…' : t('auth.sendReset')}</span><BackIcon size={17} /></button>
+          <form className="login-form" onSubmit={handleSubmit} noValidate aria-busy={loading}>
+            <div className="auth-field-group">
+              <label className="auth-field-label" htmlFor="recovery-email">{t('auth.emailAddress')}</label>
+              <div className="login-field">
+                <span className="login-field-icon"><MailIcon size={19} color="currentColor" /></span>
+                <input id="recovery-email" name="email" type="email" dir="ltr" inputMode="email" autoCapitalize="none" spellCheck="false" autoComplete="email" placeholder="name@example.com" value={email} onChange={(event) => { setEmail(event.target.value); setError(''); }} required />
+              </div>
+            </div>
+            {error && <div className="login-error" role="alert" aria-live="polite"><AlertTriangleIcon size={17} color="currentColor" /><span>{error}</span></div>}
+            <button className="login-submit" type="submit" disabled={loading} aria-busy={loading}>
+              <span aria-live="polite">{loading ? t('auth.sendingCode') : t('auth.sendReset')}</span>
+              <SubmitArrow size={17} />
+            </button>
           </form>
         )}
 

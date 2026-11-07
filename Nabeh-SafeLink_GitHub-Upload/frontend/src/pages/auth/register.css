@@ -15,59 +15,6 @@
   margin-bottom: 10px;
 }
 
-.password-criteria-box {
-  background: color-mix(in srgb, var(--color-secondary) 4%, var(--color-bg-subtle));
-  border: 1px solid color-mix(in srgb, var(--color-secondary) 22%, var(--color-border));
-  border-radius: 14px;
-  padding: 12px 16px;
-  font-size: 12px;
-  margin-top: -2px;
-  margin-bottom: 4px;
-  box-shadow: 0 2px 6px rgba(0,0,0,0.02);
-}
-
-.criteria-title {
-  font-weight: 700;
-  color: var(--color-text, #1E293B);
-  margin-bottom: 8px;
-}
-
-.criteria-list {
-  list-style: none;
-  padding: 0;
-  margin: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 5px;
-}
-
-.criteria-list li {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  color: var(--color-text-muted, #64748B);
-  transition: color 0.2s ease;
-}
-
-.criteria-list li.met {
-  color: var(--color-success, #10B981);
-  font-weight: 600;
-}
-
-.criteria-list li.met .criteria-icon {
-  opacity: 1;
-}
-
-.criteria-list li.unmet .criteria-icon {
-  opacity: 0.35;
-}
-
-.criteria-icon {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-}
-
 .password-mismatch-hint {
   font-size: 12px;
   color: var(--color-error, #EF4444);
@@ -77,16 +24,29 @@
   font-weight: 600;
 }
 
-.register-success {
-  border: 1px solid var(--color-success-border);
+.register-response {
+  border: 1px solid color-mix(in srgb, var(--color-secondary) 24%, var(--color-border));
   border-radius: 14px;
   padding: 12px 16px;
-  color: var(--color-success);
-  background: var(--color-success-bg);
+  color: var(--color-text);
+  background: color-mix(in srgb, var(--color-secondary) 4%, var(--color-bg-subtle));
   font-size: 13px;
-  font-weight: 600;
   line-height: 1.6;
-  box-shadow: 0 2px 6px rgba(22, 163, 74, 0.05);
+}
+
+.register-response h2 {
+  margin: 0 0 8px;
+  color: var(--color-text);
+  font: 700 16px/1.4 var(--font-sans);
+}
+
+.register-response p {
+  margin: 0 0 8px;
+  color: var(--color-text-muted);
+}
+
+.register-response .login-submit {
+  margin-top: 10px;
 }
 
 .register-footer {
@@ -117,6 +77,6 @@
 }
 
 .register-page .password-criteria-box,
-.register-page .register-success { padding: clamp(11px, 3vw, 16px); }
+.register-page .register-response { padding: clamp(11px, 3vw, 16px); }
 .register-page .criteria-list { gap: clamp(4px, 1.5vw, 7px); }
 .register-page .register-footer { margin-top: clamp(18px, 5vw, 28px); overflow-wrap: anywhere; }

@@ -253,3 +253,29 @@
   .login-field input { padding-inline: 8px; }
   .login-utilities { font-size: 11px; }
 }
+
+.auth-field-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.auth-field-label {
+  color: var(--color-text-secondary);
+  font: 650 12px/1.45 var(--font-sans);
+  text-align: start;
+}
+
+.login-utilities { justify-content: flex-end; }
+.login-error { text-align: start; }
+.login-submit:focus-visible,
+.login-password-toggle:focus-visible,
+.login-forgot:focus-visible,
+.login-register button:focus-visible,
+.login-guest:focus-visible,
+.forgot-back-button:focus-visible,
+.forgot-code-button:focus-visible {
+  outline: 3px solid color-mix(in srgb, var(--color-secondary) 70%, transparent);
+  outline-offset: 3px;
+}

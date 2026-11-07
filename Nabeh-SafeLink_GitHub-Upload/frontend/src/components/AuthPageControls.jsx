@@ -9,7 +9,7 @@ export default function AuthPageControls() {
   const navigate = useNavigate();
 
   return (
-    <div className="auth-page-controls" aria-label="Page preferences">
+    <div className="auth-page-controls" role="group" aria-label={t('auth.pagePreferences')}>
       <button type="button" className="auth-control auth-home-control" onClick={() => navigate('/welcome')} aria-label={t('nav.home')} title={t('nav.home')}>
         <HomeIcon size={15} color="currentColor" /><span>{t('nav.home')}</span>
       </button>

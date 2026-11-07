@@ -13,9 +13,23 @@
 }
 
 .otp-inputs {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  gap: 8px;
+}
+
+.otp-code-label {
+  color: var(--color-text-secondary);
+  text-align: start;
+}
+
+.otp-digit-grid {
   display: grid;
   grid-template-columns: repeat(6, minmax(0, 1fr));
   gap: clamp(4px, 2vw, 9px);
+  width: min(100%, 420px);
+  margin-inline: auto;
   direction: ltr;
 }
 
