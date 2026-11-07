@@ -35,6 +35,21 @@ def test_encoded_question_mark_does_not_change_raw_query_boundary():
     assert features["query_length"] == 0
 
 
+def test_known_platform_long_url_is_not_escalated_to_dangerous_by_ml_only(monkeypatch):
+    monkeypatch.setenv("NABEH_TRUST_MODEL_ARTIFACT", "1")
+    result = predict_url("https://github.com/mrmazen404-ai/Nabeh-SafeLink_GitHub-Upload")
+    assert result["classification"] != "DANGEROUS"
+    assert result["context_gated"] is True
+    assert result["raw_classification"] == "DANGEROUS"
+
+
+def test_known_platform_with_credential_signal_is_not_gated(monkeypatch):
+    monkeypatch.setenv("NABEH_TRUST_MODEL_ARTIFACT", "1")
+    result = predict_url("https://github.com/login?token=reset-password-otp")
+    if result.get("raw_classification") == "DANGEROUS":
+        assert result["context_gated"] is False
+
+
 def test_feature_contract_matches_retrained_report():
     report_path = os.path.join(os.path.dirname(__file__), "../app/ml/nabeh_model_retrained_report.json")
     if not os.path.exists(report_path):

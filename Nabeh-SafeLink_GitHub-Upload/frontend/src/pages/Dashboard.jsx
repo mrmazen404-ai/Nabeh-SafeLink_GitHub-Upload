@@ -20,10 +20,10 @@ function formatDate(value, lang = 'ar') {
   return new Intl.DateTimeFormat(lang === 'ar' ? 'ar' : 'en-US', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(value));
 }
 
-function ClassificationBadge({ value, t }) {
+function ClassificationBadge({ value, t, className = '' }) {
   const key = (value || 'UNKNOWN').toLowerCase();
   const label = t(`dashboard.labels.${key}`) || t('dashboard.labels.unknown');
-  return <span className={`result-tag ${key}`} style={{ fontSize: '11px', padding: '4px 10px' }}>{label}</span>;
+  return <span className={`result-tag ${key} ${className}`} style={{ fontSize: '11px', padding: '4px 10px' }}>{label}</span>;
 }
 
 export default function Dashboard({ activeTab, setActiveTab, onNavigateAuth }) {
@@ -219,10 +219,11 @@ export default function Dashboard({ activeTab, setActiveTab, onNavigateAuth }) {
 
   if (loading) {
     return (
-      <main className="welcome-page" dir={dir}>
+      <main className="welcome-page dashboard-page" dir={dir} aria-busy="true">
         <Header activeTab={activeTab} setActiveTab={setActiveTab} onNavigateAuth={onNavigateAuth} />
-        <div style={{ maxWidth: '1180px', margin: '80px auto', textAlign: 'center', color: 'var(--color-text-secondary)', fontSize: '18px' }}>
-          {t('dashboard.loading')}
+        <div className="dashboard-loading" role="status" aria-live="polite">
+          <span className="dashboard-loading-spinner" aria-hidden="true" />
+          <span>{t('dashboard.loading')}</span>
         </div>
         <Footer />
       </main>
@@ -230,13 +231,13 @@ export default function Dashboard({ activeTab, setActiveTab, onNavigateAuth }) {
   }
 
   return (
-    <main className="welcome-page" dir={dir}>
+    <main className="welcome-page dashboard-page" dir={dir}>
       <div className="welcome-glow welcome-glow-one" aria-hidden="true" />
       <div className="welcome-glow welcome-glow-two" aria-hidden="true" />
 
       <Header activeTab={activeTab} setActiveTab={setActiveTab} onNavigateAuth={onNavigateAuth} />
 
-      <div style={{ width: 'min(100%, 1180px)', margin: '40px auto 80px' }}>
+      <div className="dashboard-content">
         <div className="welcome-graduation" style={{ marginBottom: '32px' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '20px' }}>
             <div>
@@ -260,41 +261,42 @@ export default function Dashboard({ activeTab, setActiveTab, onNavigateAuth }) {
         </div>
 
         {message && (
-          <div className="welcome-graduation" style={{ marginBottom: '24px', padding: '16px 24px', background: 'var(--color-secondary-subtle)', borderColor: 'var(--color-secondary)' }}>
-            <p style={{ margin: 0, fontSize: '14px', fontWeight: 600, color: 'var(--color-primary)' }}>{message}</p>
+          <div className="dashboard-feedback" role="status" aria-live="polite" aria-atomic="true">
+            <span className="dashboard-feedback-mark" aria-hidden="true" />
+            <p>{message}</p>
           </div>
         )}
 
         {/* Navigation Tabs */}
-        <div style={{ display: 'flex', gap: '8px', background: 'color-mix(in srgb, var(--color-bg) 85%, transparent)', padding: '8px', borderRadius: '16px', border: '1px solid var(--color-border)', marginBottom: '32px', overflowX: 'auto', backdropFilter: 'blur(12px)' }}>
-          {[
-            ['overview', t('dashboard.tabs.overview')],
-            ['history', t('dashboard.tabs.history')],
-            ['profile', t('dashboard.tabs.profile')],
-            ['security', t('dashboard.tabs.security')],
-            ['notifications', `${t('dashboard.tabs.notifications')}${notifications.some((n) => !n.is_read) ? ' •' : ''}`],
-            ['privacy', t('dashboard.tabs.privacy')]
-          ].map(([key, label]) => (
-            <button
-              key={key}
-              type="button"
-              onClick={() => setActive(key)}
-              className={active === key ? 'welcome-primary-button' : 'welcome-secondary-button'}
-              style={{
-                borderRadius: '11px',
-                padding: '10px 20px',
-                fontSize: '13px',
-                boxShadow: active === key ? undefined : 'none'
-              }}
-            >
-              {label}
-            </button>
-          ))}
+        <div className="dashboard-tabs-wrap">
+          <div className="dashboard-tabs" role="group" aria-label={lang === 'ar' ? 'أقسام لوحة التحكم' : 'Dashboard sections'}>
+            {[
+              ['overview', t('dashboard.tabs.overview')],
+              ['history', t('dashboard.tabs.history')],
+              ['profile', t('dashboard.tabs.profile')],
+              ['security', t('dashboard.tabs.security')],
+              ['notifications', `${t('dashboard.tabs.notifications')}${notifications.some((n) => !n.is_read) ? ' •' : ''}`],
+              ['privacy', t('dashboard.tabs.privacy')]
+            ].map(([key, label]) => (
+              <button
+                key={key}
+                type="button"
+                onClick={() => setActive(key)}
+                className={`dashboard-tab ${active === key ? 'is-active welcome-primary-button' : 'welcome-secondary-button'}`}
+                aria-pressed={active === key}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+          <span className="dashboard-tabs-hint">
+            {lang === 'ar' ? 'مرّر أفقياً للتنقل بين الأقسام' : 'Scroll horizontally to explore sections'}
+          </span>
         </div>
 
         {active === 'overview' && (
           <>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '18px', marginBottom: '32px' }}>
+            <div className="dashboard-grid stats-grid dashboard-overview-stats" style={{ marginBottom: '32px' }}>
               <StatCard icon={<ClipboardIcon />} label={t('dashboard.overview.totalScans')} value={stats.total} tone="blue" />
               <StatCard icon={<CheckCircleIcon />} label={t('dashboard.overview.safeScans')} value={stats.safe} tone="green" />
               <StatCard icon={<InfoIcon />} label={t('dashboard.overview.suspiciousScans')} value={stats.suspicious} tone="amber" />
@@ -311,7 +313,7 @@ export default function Dashboard({ activeTab, setActiveTab, onNavigateAuth }) {
                   <span className="welcome-status-dot" /> {lang === 'ar' ? 'النظام يعمل' : 'System Active'}
                 </span>
               </div>
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '16px' }}>
+              <div className="quick-actions-grid">
                 <QuickAction
                   icon={<SearchIcon />}
                   title={t('home.startScanBtn')}
@@ -343,7 +345,7 @@ export default function Dashboard({ activeTab, setActiveTab, onNavigateAuth }) {
               </div>
             </div>
 
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(340px, 1fr))', gap: '20px', marginBottom: '32px' }}>
+            <div className="dashboard-grid live-grid dashboard-overview-columns" style={{ marginBottom: '32px' }}>
               <div className="welcome-graduation" style={{ margin: 0 }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
                   <div>
@@ -354,7 +356,7 @@ export default function Dashboard({ activeTab, setActiveTab, onNavigateAuth }) {
                     {realtimeStatus === 'connected' ? `● ${t('dashboard.overview.connected')}` : `○ ${t('dashboard.overview.reconnecting')}`}
                   </span>
                 </div>
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '12px', marginBottom: '16px' }}>
+                <div className="live-metrics">
                   <LiveMetric label={lang === 'ar' ? 'آخر 24 ساعة' : 'Last 24 Hours'} value={liveStats?.last_24_hours ?? '—'} />
                   <LiveMetric label={lang === 'ar' ? 'الإجمالي' : 'Total'} value={liveStats?.total ?? '—'} />
                   <LiveMetric label={lang === 'ar' ? 'غير مقروءة' : 'Unread'} value={liveStats?.unread_notifications ?? '—'} />
@@ -378,7 +380,7 @@ export default function Dashboard({ activeTab, setActiveTab, onNavigateAuth }) {
               </div>
             </div>
 
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(340px, 1fr))', gap: '20px' }}>
+            <div className="dashboard-grid two-columns dashboard-history-grid">
               <div className="welcome-graduation" style={{ margin: 0 }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
                   <div>
@@ -478,7 +480,7 @@ export default function Dashboard({ activeTab, setActiveTab, onNavigateAuth }) {
         )}
 
         {active === 'security' && (
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(340px, 1fr))', gap: '20px' }}>
+          <div className="dashboard-grid two-columns dashboard-security-grid">
             <div className="welcome-graduation" style={{ margin: 0 }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
                 <div>
@@ -646,7 +648,7 @@ function StatCard({ icon, label, value, tone }) {
   };
   const t = tones[tone] || tones.blue;
   return (
-    <div className="welcome-graduation" style={{ display: 'flex', alignItems: 'center', gap: '16px', padding: '22px', margin: 0 }}>
+    <div className="welcome-graduation dashboard-stat-card" style={{ display: 'flex', alignItems: 'center', gap: '16px', margin: 0 }}>
       <div style={{ width: '50px', height: '50px', borderRadius: '14px', background: t.bg, color: t.color, display: 'grid', placeItems: 'center', flexShrink: 0 }}>
         {icon}
       </div>
@@ -663,36 +665,24 @@ function QuickAction({ icon, title, description, onClick, dir }) {
     <button
       type="button"
       onClick={onClick}
-      style={{
-        display: 'flex',
-        alignItems: 'center',
-        gap: '14px',
-        padding: '16px',
-        background: 'color-mix(in srgb, var(--color-bg) 75%, transparent)',
-        border: '1px solid var(--color-border)',
-        borderRadius: '14px',
-        cursor: 'pointer',
-        textAlign: dir === 'rtl' ? 'right' : 'left',
-        width: '100%',
-        fontFamily: 'inherit',
-        transition: '0.2s',
-      }}
+      className="quick-action"
+      style={{ textAlign: dir === 'rtl' ? 'right' : 'left' }}
     >
-      <div style={{ width: '42px', height: '42px', borderRadius: '12px', background: 'var(--color-secondary-subtle)', color: 'var(--color-secondary)', display: 'grid', placeItems: 'center', flexShrink: 0 }}>
+      <div className="quick-action-icon">
         {icon}
       </div>
-      <div style={{ flex: 1, minWidth: 0 }}>
-        <strong style={{ fontSize: '14px', color: 'var(--color-primary)', display: 'block', marginBottom: '2px' }}>{title}</strong>
-        <small style={{ color: 'var(--color-text-muted)', fontSize: '12px' }}>{description}</small>
+      <div>
+        <strong>{title}</strong>
+        <small>{description}</small>
       </div>
-      <span style={{ color: 'var(--color-secondary)', fontWeight: 700 }}>{dir === 'rtl' ? '←' : '→'}</span>
+      <span className="quick-action-arrow">{dir === 'rtl' ? '←' : '→'}</span>
     </button>
   );
 }
 
 function LiveMetric({ label, value }) {
   return (
-    <div style={{ background: 'color-mix(in srgb, var(--color-bg) 75%, transparent)', border: '1px solid var(--color-border)', borderRadius: '12px', padding: '14px', textAlign: 'center' }}>
+    <div className="live-metric">
       <strong style={{ display: 'block', fontSize: '22px', fontWeight: 800, color: 'var(--color-primary)', marginBottom: '4px', fontFamily: 'Poppins, sans-serif' }}>{value}</strong>
       <span style={{ color: 'var(--color-text-muted)', fontSize: '11px' }}>{label}</span>
     </div>
@@ -704,10 +694,10 @@ function ActivityFeed({ activities, lang, t }) {
   return (
     <div style={{ display: 'grid', gap: '10px' }}>
       {activities.map((item) => (
-        <div key={item.id} style={{ display: 'flex', alignItems: 'center', gap: '12px', padding: '12px 16px', background: 'color-mix(in srgb, var(--color-bg) 75%, transparent)', border: '1px solid var(--color-border)', borderRadius: '12px', fontSize: '12px' }}>
-          <span style={{ width: '8px', height: '8px', borderRadius: '50%', background: item.kind === 'security' ? '#DC2626' : '#1E5EFF', flexShrink: 0 }} />
+        <div key={item.id} className="activity-item">
+          <span className={`activity-dot ${item.kind === 'security' ? 'security' : 'scan'}`} />
           <div style={{ flex: 1, minWidth: 0 }}>
-            <strong style={{ display: 'block', color: 'var(--color-primary)', fontWeight: 700, marginBottom: '2px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{item.title}</strong>
+            <strong className="dashboard-activity-title">{item.title}</strong>
             <small style={{ color: 'var(--color-text-secondary)', fontSize: '11px' }}>{item.action}</small>
           </div>
           <time style={{ color: 'var(--color-text-muted)', fontSize: '10px', whiteSpace: 'nowrap' }}>{formatDate(item.created_at, lang)}</time>
@@ -720,35 +710,23 @@ function ActivityFeed({ activities, lang, t }) {
 function ScanTable({ scans, onSelect, emptyText, t, lang }) {
   if (!scans?.length) return <Empty text={emptyText || 'No data.'} t={t} />;
   return (
-    <div style={{ display: 'grid', gap: '8px' }}>
+    <div className="scan-table">
       {scans.map((scan) => (
         <button
           type="button"
           key={scan.id}
           onClick={() => onSelect?.(scan)}
-          style={{
-            display: 'grid',
-            gridTemplateColumns: '80px 1fr auto auto',
-            gap: '12px',
-            alignItems: 'center',
-            padding: '14px 18px',
-            background: 'color-mix(in srgb, var(--color-bg) 75%, transparent)',
-            border: '1px solid var(--color-border)',
-            borderRadius: '14px',
-            width: '100%',
-            textAlign: lang === 'ar' ? 'right' : 'left',
-            cursor: 'pointer',
-            fontFamily: 'inherit',
-          }}
+          className="scan-row"
+          style={{ textAlign: lang === 'ar' ? 'right' : 'left' }}
         >
-          <span className="result-tag" style={{ fontSize: '10px', padding: '4px 10px', background: 'var(--color-secondary-subtle)', color: 'var(--color-secondary)' }}>
+          <span className="result-tag scan-kind" style={{ fontSize: '10px', padding: '4px 10px', background: 'var(--color-secondary-subtle)', color: 'var(--color-secondary)' }}>
             {scan.input_type === 'MESSAGE' ? (lang === 'ar' ? 'رسالة' : 'Text') : (lang === 'ar' ? 'رابط' : 'URL')}
           </span>
-          <span style={{ fontSize: '13px', color: 'var(--color-primary)', fontWeight: 600, direction: 'ltr', textAlign: 'left', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          <span className="scan-value">
             {scan.input_value_masked || '••••'}
           </span>
-          <ClassificationBadge value={scan.classification} t={t} />
-          <time style={{ color: 'var(--color-text-muted)', fontSize: '11px', whiteSpace: 'nowrap' }}>{formatDate(scan.created_at, lang)}</time>
+          <ClassificationBadge value={scan.classification} t={t} className="scan-classification" />
+          <time>{formatDate(scan.created_at, lang)}</time>
         </button>
       ))}
     </div>
@@ -757,9 +735,11 @@ function ScanTable({ scans, onSelect, emptyText, t, lang }) {
 
 function Empty({ text, action, t }) {
   return (
-    <div style={{ textAlign: 'center', padding: '40px', color: 'var(--color-text-secondary)' }}>
-      <BarChartIcon size={32} style={{ marginBottom: '10px', opacity: 0.5, color: 'var(--color-secondary)' }} />
-      <p style={{ fontSize: '14px', marginBottom: '16px' }}>{text}</p>
+    <div className="dashboard-empty" aria-live="polite" aria-atomic="true">
+      <span className="dashboard-empty-icon" aria-hidden="true">
+        <BarChartIcon size={32} />
+      </span>
+      <p>{text}</p>
       {action && (
         <button type="button" className="welcome-primary-button" onClick={action}>
           {t ? t('home.startScanBtn') : 'Start Scan'}
