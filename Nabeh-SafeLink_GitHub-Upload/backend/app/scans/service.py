@@ -114,16 +114,20 @@ def _build_url_evidence_card(target_url: str, combined: dict, ml_result: dict, v
 
     vt_status = str(vt_result.get("status", "UNKNOWN")).upper()
     count_keys = ("malicious", "suspicious", "harmless", "undetected", "timeout", "total_engines")
-    counts_available = vt_result.get("analysis_data_available")
+    counts_available = vt_result.get("analysis_stats_available")
     if counts_available is None:
-        counts_available = any(key in vt_result for key in count_keys)
+        # Backward compatibility for stored/provider test payloads predating this flag.
+        counts_available = any(key in vt_result for key in count_keys) and bool(vt_result.get("analysis_data_available", True))
     if counts_available:
         vt_counts = {}
+        source_counts = vt_result.get("counts") if isinstance(vt_result.get("counts"), dict) else vt_result
         for key in count_keys:
-            if key not in vt_result:
+            if key not in source_counts:
                 continue
             try:
-                vt_counts[key] = max(0, int(vt_result[key] or 0))
+                value = int(source_counts[key])
+                if value >= 0:
+                    vt_counts[key] = value
             except (TypeError, ValueError):
                 continue
     else:
@@ -171,7 +175,8 @@ def _build_url_evidence_card(target_url: str, combined: dict, ml_result: dict, v
                 "evidence_timestamp": vt_result.get("evidence_timestamp"),
                 "last_analysis_date": vt_result.get("last_analysis_date"),
                 "freshness_reason": vt_result.get("analysis_freshness_reason"),
-                "analysis_data_available": bool(counts_available),
+                "analysis_data_available": bool(vt_result.get("analysis_data_available", counts_available)),
+                "analysis_stats_available": bool(counts_available),
                 "counts": vt_counts,
                 "scanner_results": scanner_results,
                 "scanner_results_total": scanner_results_total,
@@ -192,6 +197,7 @@ def _build_url_evidence_card(target_url: str, combined: dict, ml_result: dict, v
         "limitations": [
             "NO_MODEL_FEATURE_ATTRIBUTION_AVAILABLE",
             "INTERNAL_MODEL_AND_WEIGHTED_SCORES_NOT_EXPOSED",
+            "HIDDEN_SCORE_RULES_CANNOT_BE_INDEPENDENTLY_RECOMPUTED_FROM_THIS_CARD",
             "SCANNER_COUNTS_ARE_NOT_CALIBRATED_PROBABILITIES",
             "UNDETECTED_MEANS_NO_OPINION_NOT_HARMLESS",
             "RESULT_APPLIES_TO_SOURCES_AVAILABLE_AT_SCAN_TIME",

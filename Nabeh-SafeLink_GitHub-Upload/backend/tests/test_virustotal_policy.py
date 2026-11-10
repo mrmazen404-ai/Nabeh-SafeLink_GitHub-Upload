@@ -114,7 +114,8 @@ def test_sensitive_word_in_non_sensitive_query_key_is_not_overblocked(monkeypatc
 
     result = asyncio.run(client.check_url_virustotal("https://example.com/?monkey=tree"))
 
-    assert result["provider_status"] == "SUCCESS"
+    assert result["provider_status"] == "NO_VERDICT"
+    assert result["status"] == "UNKNOWN"
     assert len(fake.get_calls) == 2
     assert len(fake.post_calls) == 1
 
@@ -135,7 +136,7 @@ def test_capacity_limit_returns_unknown_without_provider_request(monkeypatch):
 
 
 @pytest.mark.parametrize(("date_offset", "expected_status"), [
-    (timedelta(hours=24), "SAFE"),
+    (timedelta(hours=24), "UNKNOWN"),
     (timedelta(hours=169), "UNKNOWN"),
     (None, "UNKNOWN"),
 ])
@@ -156,6 +157,8 @@ def test_lookup_applies_freshness_and_preserves_historical_counts(monkeypatch, d
     if date_offset is None:
         assert result["provider_status"] == "ANALYSIS_DATE_MISSING"
         assert "timestamp is missing" in result["analysis_freshness_reason"]
+    elif expected_status == "UNKNOWN" and date_offset <= timedelta(hours=168):
+        assert result["provider_status"] == "NO_VERDICT"
     elif date_offset > timedelta(hours=168):
         assert result["provider_status"] == "ANALYSIS_STALE"
         assert "older than" in result["analysis_freshness_reason"]

@@ -83,6 +83,7 @@ def test_virustotal_missing_analysis_does_not_become_zero_detection_evidence():
     parsed = [_parse_response(response) for response in responses]
     assert all(result["status"] == "UNKNOWN" for result in parsed)
     assert all(result["analysis_data_available"] is False for result in parsed)
+    assert all(result["analysis_stats_available"] is False for result in parsed)
 
     card = _build_url_evidence_card(
         "https://example.com",
@@ -93,6 +94,31 @@ def test_virustotal_missing_analysis_does_not_become_zero_detection_evidence():
     )
     assert card["sources"]["virustotal"]["counts"] == {}
     assert card["sources"]["virustotal"]["scanner_results"] == []
+
+
+def test_virustotal_timestamp_without_stats_does_not_create_zero_counts():
+    result = _parse_response({"data": {"attributes": {"last_analysis_date": 1793750400}}})
+    card = _build_url_evidence_card(
+        "https://example.com",
+        {"classification": "UNKNOWN", "decision_code": "INSUFFICIENT_EVIDENCE"},
+        {"classification": "UNKNOWN", "source": "MODEL_UNAVAILABLE"},
+        result,
+        {"provider": "LOCAL_RULES"},
+    )
+    assert result["analysis_data_available"] is True
+    assert result["analysis_stats_available"] is False
+    assert result["status"] == "UNKNOWN"
+    assert card["sources"]["virustotal"]["counts"] == {}
+    assert card["decision"]["inputs"]["virustotal_counts"] == {}
+
+
+def test_ipv4_observation_uses_validated_address_parsing():
+    valid = {item["code"]: item["value"] for item in _build_url_observations("https://192.168.1.1/")}
+    invalid = {item["code"]: item["value"] for item in _build_url_observations("https://999.999.999.999/")}
+    ipv6 = {item["code"]: item["value"] for item in _build_url_observations("https://[2001:db8::1]/")}
+    assert valid["IPV4_HOST"] is True
+    assert invalid["IPV4_HOST"] is False
+    assert ipv6["IPV4_HOST"] is False
 
 
 def test_evidence_card_uses_same_fusion_rule_and_withholds_model_probability():
