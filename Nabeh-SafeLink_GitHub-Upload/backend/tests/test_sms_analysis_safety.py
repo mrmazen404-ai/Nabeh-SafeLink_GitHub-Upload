@@ -279,4 +279,39 @@ def test_multi_link_scan_public_evidence_matches_strongest_link(monkeypatch):
     assert result["stages"]["stage2_link_audit"]["status"] == "DANGEROUS"
     assert result["stages"]["stage2_link_audit"]["results"][0]["classification"] == "SAFE"
     assert result["stages"]["stage2_link_audit"]["results"][1]["classification"] == "DANGEROUS"
+
+
+def test_sms_reports_partial_coverage_for_defanged_links(monkeypatch):
+    from app.scans import service as scan_service
+    from app.config import settings
+
+    monkeypatch.setattr(scan_service, "setting_enabled_fail_closed", lambda _key: False)
+    monkeypatch.setattr(settings, "SCAN_TOTAL_TIMEOUT_SECONDS", 5)
+
+    result = asyncio.run(ScanService.process_text_scan(
+        "تحذير: افتح hxxps://example[.]com فوراً",
+        language="ar",
+    ))
+
+    assert result["analysis_coverage"] == "PARTIAL"
+    assert "DEFANGED_URL_NOT_SCANNED" in result["coverage_reasons"]
+    assert result["unscanned_url_candidates"]
+    assert result["links_not_scanned_count"] >= 1
+
+
+def test_sms_reports_message_truncation_and_gemini_coverage(monkeypatch):
+    from app.scans import service as scan_service
+    from app.config import settings
+
+    monkeypatch.setattr(scan_service, "setting_enabled_fail_closed", lambda _key: False)
+    monkeypatch.setattr(settings, "SCAN_TOTAL_TIMEOUT_SECONDS", 5)
+
+    message = ("رسالة طويلة " * 80) + " أدخل رمز التحقق الآن"
+    result = asyncio.run(ScanService.process_text_scan(message, language="ar"))
+
+    assert result["analysis_coverage"] == "PARTIAL"
+    assert "MESSAGE_TRUNCATED_FOR_GEMINI" in result["coverage_reasons"]
+    assert result["message_characters"] == len(message)
+    assert result["gemini_characters_analyzed"] == 600
+    assert result["explanation"]["input_truncated"] is True
 from types import SimpleNamespace

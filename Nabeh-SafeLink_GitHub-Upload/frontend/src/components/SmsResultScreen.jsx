@@ -89,6 +89,12 @@ export default function SmsResultScreen({ result, onReset, activeTab, setActiveT
   const unscannedUrlCandidates = Array.isArray(result?.unscanned_url_candidates)
     ? result.unscanned_url_candidates
     : [];
+  const analysisCoverage = String(result?.analysis_coverage || result?.text_analysis?.analysis_coverage || 'FULL').toUpperCase();
+  const coverageReasons = Array.isArray(result?.coverage_reasons)
+    ? result.coverage_reasons
+    : (Array.isArray(result?.text_analysis?.coverage_reasons) ? result.text_analysis.coverage_reasons : []);
+  const messageCharacters = Number(result?.message_characters ?? result?.text_analysis?.message_characters ?? messageText.length);
+  const geminiCharactersAnalyzed = Number(result?.gemini_characters_analyzed ?? result?.text_analysis?.gemini_characters_analyzed ?? Math.min(messageCharacters, 600));
   const provider = String(exp?.provider || result?.source || '').toUpperCase();
   const usesGemini = provider.includes('GEMINI');
   const geminiClassification = exp?.classification || result?.stages?.stage3_gemini_sms?.classification || '';
@@ -205,6 +211,46 @@ export default function SmsResultScreen({ result, onReset, activeTab, setActiveT
                   )}
                 </div>
               )}
+              <div
+                role={analysisCoverage === 'PARTIAL' ? 'alert' : 'status'}
+                style={{
+                  marginTop: '14px',
+                  padding: '12px 14px',
+                  borderRadius: '10px',
+                  border: `1px solid ${analysisCoverage === 'PARTIAL' ? 'var(--color-danger-border)' : 'var(--color-border-subtle)'}`,
+                  background: analysisCoverage === 'PARTIAL' ? 'var(--color-danger-bg)' : 'var(--color-bg-subtle)',
+                  color: analysisCoverage === 'PARTIAL' ? 'var(--color-danger)' : 'var(--color-text-subtle)',
+                  fontSize: '0.86rem',
+                  lineHeight: '1.6',
+                }}
+              >
+                <strong>
+                  {analysisCoverage === 'PARTIAL'
+                    ? (lang === 'ar' ? 'تنبيه: التحليل جزئي' : 'Warning: Partial analysis')
+                    : (lang === 'ar' ? 'تغطية التحليل: كاملة ضمن الحدود المتاحة' : 'Analysis coverage: Full within available limits')}
+                </strong>
+                {analysisCoverage === 'PARTIAL' && (
+                  <>
+                    <div>
+                      {lang === 'ar'
+                        ? `تم تحليل ${geminiCharactersAnalyzed} من ${messageCharacters} محرفًا بواسطة Gemini عند استخدامه.`
+                        : `${geminiCharactersAnalyzed} of ${messageCharacters} characters were supplied to Gemini when enabled.`}
+                    </div>
+                    {coverageReasons.length > 0 && (
+                      <div>
+                        {lang === 'ar'
+                          ? `أسباب التغطية الجزئية: ${coverageReasons.join('، ')}`
+                          : `Partial-coverage reasons: ${coverageReasons.join(', ')}`}
+                      </div>
+                    )}
+                    <div>
+                      {lang === 'ar'
+                        ? 'لا تعتبر هذه النتيجة حكمًا على الأجزاء أو الروابط التي لم تدخل التحليل.'
+                        : 'Do not treat this result as a verdict on message sections or links outside the analyzed coverage.'}
+                    </div>
+                  </>
+                )}
+              </div>
             </div>
 
             <h2 className="result-title">{config.title}</h2>

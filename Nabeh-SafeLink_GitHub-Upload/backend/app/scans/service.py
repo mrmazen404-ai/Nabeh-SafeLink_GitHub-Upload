@@ -670,7 +670,17 @@ class ScanService:
         unscanned_url_candidates = extract_defanged_urls_from_text(text_content)
         extracted_urls = all_extracted_urls[:MAX_EMBEDDED_URLS]
         unscanned_urls = all_extracted_urls[len(extracted_urls):]
+        message_input_truncated = len(text_content or "") > 600
         unscanned_url_count = len(unscanned_urls)
+        unscanned_link_count = unscanned_url_count + len(unscanned_url_candidates)
+        coverage_reasons = []
+        if message_input_truncated:
+            coverage_reasons.append("MESSAGE_TRUNCATED_FOR_GEMINI")
+        if unscanned_url_count:
+            coverage_reasons.append("EMBEDDED_URL_LIMIT_REACHED")
+        if unscanned_url_candidates:
+            coverage_reasons.append("DEFANGED_URL_NOT_SCANNED")
+        analysis_coverage = "PARTIAL" if coverage_reasons else "FULL"
         log_event(logger, logging.INFO, "scan_validation_succeeded", operation_id=operation_id, input_type="TEXT", mode="sms", links_detected=len(all_extracted_urls), links_scanned=len(extracted_urls))
         extracted_url = extracted_urls[0] if extracted_urls else ""
         semaphore = asyncio.Semaphore(2)
@@ -719,7 +729,7 @@ class ScanService:
             )
             combined = dict(strongest["combined"])
             selected_url = strongest["url"]
-            if unscanned_url_count and combined.get("classification") == "SAFE":
+            if unscanned_link_count and combined.get("classification") == "SAFE":
                 combined.update(classification="UNKNOWN", confidence=None, source="PARTIAL_LINK_ANALYSIS")
             elif len(embedded_url_analyses) > 1:
                 combined["source"] = "MULTIPLE_EMBEDDED_URLS"
@@ -754,7 +764,7 @@ class ScanService:
                 }
                 for item in embedded_url_analyses
             ],
-            "unscanned_url_count": unscanned_url_count,
+            "unscanned_url_count": unscanned_link_count,
             "url_combined_verdict": combined,
         }
 
@@ -771,7 +781,7 @@ class ScanService:
             ai_analysis = cls._local_sms_fallback(
                 text_content, selected_url or extracted_url, combined, language, "LOCAL_FEATURE_DISABLED"
             )
-            ai_analysis.update(provider_status="DISABLED", fallback_reason="AI_FEATURE_DISABLED", input_truncated=False)
+            ai_analysis.update(provider_status="DISABLED", fallback_reason="AI_FEATURE_DISABLED", input_truncated=message_input_truncated)
             log_event(logger, logging.WARNING, "scan_gemini_fallback_selected", operation_id=operation_id, provider="LOCAL_RULES", fallback_reason="AI_FEATURE_DISABLED", mode="sms")
         else:
             try:
@@ -823,6 +833,8 @@ class ScanService:
             safety_evidence = {**safety_evidence, "classification": "UNKNOWN", "confidence": None}
         ai_analysis = cls._enforce_text_safety_floor(safety_evidence, local_text, ai_analysis)
         classification = ai_analysis.get("classification", combined.get("classification", "UNKNOWN"))
+        input_truncated = bool(ai_analysis.get("input_truncated", False) or message_input_truncated)
+        analysis_coverage = "PARTIAL" if (coverage_reasons or input_truncated) else "FULL"
         # This SMS task has no independently calibrated probability model.
         confidence = None
         fraud_prob = None
@@ -835,7 +847,11 @@ class ScanService:
             "provider": ai_analysis.get("provider", "GEMINI_AI"),
             "provider_status": ai_analysis.get("provider_status", "NOT_REPORTED"),
             "fallback_reason": ai_analysis.get("fallback_reason"),
-            "input_truncated": ai_analysis.get("input_truncated", False),
+            "input_truncated": input_truncated,
+            "analysis_coverage": analysis_coverage,
+            "coverage_reasons": coverage_reasons,
+            "message_characters": len(text_content or ""),
+            "gemini_characters_analyzed": min(len(text_content or ""), 600),
             "claimed_sender": ai_analysis.get("claimed_sender", "جهة غير محددة"),
             "official_domain": ai_analysis.get("official_domain", "غير متاح"),
             "official_portal_url": ai_analysis.get("official_portal_url", "غير متاح"),
@@ -854,13 +870,17 @@ class ScanService:
             "scan_kind": "SMS_TEXT",
             "input_type": "TEXT",
             "input_value": text_content,
+            "analysis_coverage": analysis_coverage,
+            "coverage_reasons": coverage_reasons,
+            "message_characters": len(text_content or ""),
+            "gemini_characters_analyzed": min(len(text_content or ""), 600),
             "extracted_url": extracted_url or None,
             "selected_url": selected_url,
             "extracted_urls": all_extracted_urls,
             "unscanned_urls": unscanned_urls,
             "unscanned_url_candidates": unscanned_url_candidates,
             "links_scanned_count": len(embedded_url_analyses),
-            "links_not_scanned_count": unscanned_url_count,
+            "links_not_scanned_count": unscanned_link_count,
             "embedded_url_analyses": [
                 {
                     "url": item["url"],
@@ -881,7 +901,11 @@ class ScanService:
                 "extracted_url": extracted_url or None,
                 "extracted_urls": all_extracted_urls,
                 "links_scanned_count": len(embedded_url_analyses),
-                "links_not_scanned_count": unscanned_url_count,
+                "links_not_scanned_count": unscanned_link_count,
+                "analysis_coverage": analysis_coverage,
+                "coverage_reasons": coverage_reasons,
+                "message_characters": len(text_content or ""),
+                "gemini_characters_analyzed": min(len(text_content or ""), 600),
                 "lure_type": ai_analysis.get("lure_type", ""),
                 "fraud_probability": fraud_prob,
             },
@@ -901,7 +925,9 @@ class ScanService:
                     "suspicious": vt_result.get("suspicious", 0),
                     "total_engines": vt_result.get("total_engines", 0),
                     "urls_scanned_count": len(embedded_url_analyses),
-                    "urls_not_scanned_count": unscanned_url_count,
+                    "urls_not_scanned_count": unscanned_link_count,
+                    "analysis_coverage": analysis_coverage,
+                    "coverage_reasons": coverage_reasons,
                     "results": [
                         {
                             "url": item["url"],
