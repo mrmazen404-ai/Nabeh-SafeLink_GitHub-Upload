@@ -7,6 +7,7 @@ import re
 import math
 import json
 import threading
+import ipaddress
 import joblib
 from urllib.parse import urlsplit, unquote
 import pandas as pd
@@ -301,8 +302,10 @@ def extract_features(raw_url: str) -> dict:
 
 
 
-    ipv4_pattern = re.compile(r"^(?:\d{1,3}\.){3}\d{1,3}$")
-    is_ipv4 = int(bool(ipv4_pattern.match(host)))
+    try:
+        is_ipv4 = int(ipaddress.ip_address(host).version == 4)
+    except ValueError:
+        is_ipv4 = 0
 
     percent_count = full.count("%")
     at_count = full.count("@")

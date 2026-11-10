@@ -357,7 +357,11 @@ async def _submit_url(url: str, client: httpx.AsyncClient) -> Dict[str, Any]:
             get_response = await client.get(get_endpoint, headers=_get_headers())
             if get_response.status_code == 200:
                 result = _apply_freshness(_parse_response(get_response.json()))
-                if result.get("status") != "UNKNOWN" or result.get("provider_status") in {"ANALYSIS_STALE", "ANALYSIS_DATE_MISSING"}:
+                if (
+                    result.get("status") != "UNKNOWN"
+                    or result.get("provider_status") in {"ANALYSIS_STALE", "ANALYSIS_DATE_MISSING"}
+                    or result.get("analysis_data_available")
+                ):
                     log_event(logger, logging.INFO, "virustotal_submit_succeeded", target_id=target_id, status=result.get("status"), attempt=attempt + 1)
                     return result
             elif get_response.status_code in (401, 403):
@@ -384,24 +388,45 @@ def _parse_response(data: Dict[str, Any]) -> Dict[str, Any]:
     """Parse VirusTotal response with sanitized output."""
     try:
         attributes = data.get("data", {}).get("attributes", {})
-        stats = attributes.get("last_analysis_stats", {})
+        raw_stats = attributes.get("last_analysis_stats")
+        stats = raw_stats if isinstance(raw_stats, dict) else {}
 
         def safe_count(value):
+            if isinstance(value, bool):
+                return None
             try:
-                return max(0, int(value or 0))
+                parsed = int(value)
+                if parsed < 0 or str(parsed) != str(value).strip():
+                    return None
+                return parsed
             except (TypeError, ValueError):
-                return 0
+                return None
 
-        malicious = safe_count(stats.get("malicious", 0))
-        suspicious = safe_count(stats.get("suspicious", 0))
-        harmless = safe_count(stats.get("harmless", 0))
-        undetected = safe_count(stats.get("undetected", 0))
-        timeout = safe_count(stats.get("timeout", 0))
+        required_stats = ("malicious", "suspicious", "harmless", "undetected")
+        valid_stats = {
+            key: count for key, value in stats.items()
+            if (count := safe_count(value)) is not None
+        }
+        analysis_stats_complete = bool(
+            isinstance(raw_stats, dict)
+            and all(key in valid_stats for key in required_stats)
+        )
+        analysis_stats_available = bool(
+            valid_stats and any(count > 0 for count in valid_stats.values())
+        )
+        malicious = valid_stats.get("malicious", 0)
+        suspicious = valid_stats.get("suspicious", 0)
+        harmless = valid_stats.get("harmless", 0)
+        undetected = valid_stats.get("undetected", 0)
+        timeout = valid_stats.get("timeout", 0)
         additional_statuses = {
-            key: safe_count(value) for key, value in stats.items()
+            key: count for key, count in valid_stats.items()
             if key not in {"malicious", "suspicious", "harmless", "undetected"}
         }
-        total = malicious + suspicious + harmless + undetected + sum(additional_statuses.values())
+        total = sum(valid_stats.values()) if analysis_stats_complete else None
+        report_counts = dict(valid_stats)
+        if analysis_stats_complete:
+            report_counts["total_engines"] = total
         raw_results = attributes.get("last_analysis_results", {})
         scanner_results = []
         scanner_results_total = len(raw_results) if isinstance(raw_results, dict) else 0
@@ -428,9 +453,9 @@ def _parse_response(data: Dict[str, Any]) -> Dict[str, Any]:
         elif malicious >= 1 or suspicious >= 1:
             status = "SUSPICIOUS"
             confidence = 0.6
-        elif harmless > 0 and malicious == 0:
+        elif analysis_stats_complete and harmless > 0 and malicious == 0 and suspicious == 0:
             status = "SAFE"
-            confidence = min(1.0, harmless / max(1, total))
+            confidence = min(1.0, harmless / max(1, total or 0))
         else:
             status = "UNKNOWN"
             confidence = 0.3
@@ -444,12 +469,15 @@ def _parse_response(data: Dict[str, Any]) -> Dict[str, Any]:
             "harmless": harmless,
             "undetected": undetected,
             "timeout": timeout,
-            "total_engines": total,
+            "total_engines": total or 0,
+            "counts": report_counts,
+            "analysis_stats_complete": analysis_stats_complete,
             "analysis_data_available": bool(
                 scanner_results
-                or any(safe_count(value) > 0 for value in stats.values())
+                or analysis_stats_available
                 or attributes.get("last_analysis_date")
             ),
+            "analysis_stats_available": analysis_stats_available,
             "unclassified_engines": sum(additional_statuses.values()),
             "additional_engine_statuses": additional_statuses,
             "scanner_results": scanner_results,

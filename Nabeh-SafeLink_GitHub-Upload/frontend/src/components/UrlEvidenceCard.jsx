@@ -172,7 +172,7 @@ export default function UrlEvidenceCard({ card, lang = 'ar', t }) {
       <section className="url-evidence-limitations" aria-labelledby="url-evidence-limits-title">
         <h3 id="url-evidence-limits-title">{text('Limitations')}</h3>
         <ul>
-          {['CountsLimit', 'UndetectedLimit', 'FeatureLimit', 'InternalScoresLimit', 'TimeLimit'].map((key) => <li key={key}>{text(key)}</li>)}
+          {['CountsLimit', 'UndetectedLimit', 'FeatureLimit', 'InternalScoresLimit', 'RuleVerifiabilityLimit', 'TimeLimit'].map((key) => <li key={key}>{text(key)}</li>)}
         </ul>
       </section>
 
