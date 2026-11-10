@@ -39,6 +39,9 @@ export default function UrlEvidenceCard({ card, lang = 'ar', t }) {
   const sources = card.sources || {};
   const vt = sources.virustotal || {};
   const ml = sources.ml_model || {};
+  const explanationSource = sources.explanation || {};
+  const citations = Array.isArray(explanationSource.citations) ? explanationSource.citations : [];
+  const domainVerification = explanationSource.domain_verification || {};
   const counts = vt.counts || {};
   const reasonKey = {
     VT_STRONG_CONSENSUS: 'ReasonVtConsensus',
@@ -174,6 +177,20 @@ export default function UrlEvidenceCard({ card, lang = 'ar', t }) {
         <ul>
           {['CountsLimit', 'UndetectedLimit', 'FeatureLimit', 'InternalScoresLimit', 'RuleVerifiabilityLimit', 'TimeLimit'].map((key) => <li key={key}>{text(key)}</li>)}
         </ul>
+      </section>
+
+      <section className="url-evidence-panel" aria-labelledby="url-evidence-grounding-title">
+        <h3 id="url-evidence-grounding-title">{lang === 'ar' ? 'مصادر التفسير والتحقق المرجعي' : 'Explanation sources and reference check'}</h3>
+        <p className="url-evidence-note">
+          {lang === 'ar'
+            ? `حالة محاذاة النطاق: ${domainVerification.status || 'غير متاحة'} — لا تثبت هوية مالك النطاق.`
+            : `Domain alignment: ${domainVerification.status || 'NOT_REPORTED'} — this does not prove domain ownership.`}
+        </p>
+        {citations.length > 0 ? (
+          <ul>
+            {citations.map((citation, index) => <li key={`${citation.url}-${index}`}><a href={citation.url} target="_blank" rel="noopener noreferrer">{citation.title || citation.url}</a></li>)}
+          </ul>
+        ) : <p className="url-evidence-note">{lang === 'ar' ? 'لم يعُد مزود Gemini مصادر Grounding قابلة للعرض.' : 'No displayable grounding sources were returned by Gemini.'}</p>}
       </section>
 
       {formatTimestamp(card.generated_at, lang) && <p className="url-evidence-generated">{text('GeneratedAt')}: {formatTimestamp(card.generated_at, lang)} UTC</p>}

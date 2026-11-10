@@ -87,6 +87,24 @@ def _get_client():
         client = genai.Client(api_key=current_key)
     return client
 
+
+def _extract_grounding_citations(response) -> list[dict[str, str]]:
+    """Keep only URLs actually returned in Gemini grounding metadata."""
+    citations = []
+    seen = set()
+    candidates = getattr(response, "candidates", None) or []
+    for candidate in candidates:
+        metadata = getattr(candidate, "grounding_metadata", None)
+        chunks = getattr(metadata, "grounding_chunks", None) if metadata else None
+        for chunk in chunks or []:
+            web = getattr(chunk, "web", None)
+            url = getattr(web, "uri", None) if web else None
+            title = getattr(web, "title", None) if web else None
+            if isinstance(url, str) and url.startswith(("http://", "https://")) and url not in seen:
+                seen.add(url)
+                citations.append({"title": str(title or url)[:240], "url": url[:500]})
+    return citations[:10]
+
 # Resilient model cascade. The configured model is tried first, followed by
 # current production aliases/models. Retired 1.5/2.0 IDs are intentionally
 # excluded because Google returns NOT_FOUND for generateContent on them.
@@ -429,6 +447,7 @@ Do not return probability, confidence, or numeric risk scores.
                 parsed["provider_status"] = "SUCCESS"
                 parsed["fallback_reason"] = None
                 parsed["input_truncated"] = input_truncated
+                parsed["citations"] = _extract_grounding_citations(response)
                 parsed = _sanitize_official_portal_url(parsed, text_content, extracted_url, language)
                 log_event(logger, logging.INFO, "gemini_sms_analysis_succeeded", operation_id=operation_id, model=model_name, mode="search")
                 _set_provider_status("ready", "GEMINI_SEARCH")
@@ -468,6 +487,7 @@ Do not return probability, confidence, or numeric risk scores.
                 parsed["provider_status"] = "SUCCESS"
                 parsed["fallback_reason"] = None
                 parsed["input_truncated"] = input_truncated
+                parsed["citations"] = _extract_grounding_citations(response)
                 parsed = _sanitize_official_portal_url(parsed, text_content, extracted_url, language)
                 log_event(logger, logging.INFO, "gemini_sms_analysis_succeeded", operation_id=operation_id, model=model_name, mode="json")
                 _set_provider_status("ready", "GEMINI")
@@ -547,8 +567,35 @@ def _sanitize_official_portal_url(
     parsed["official_portal_url"] = "غير متاح"
     parsed["official_domain"] = "غير متاح"
     parsed["authenticity_status"] = "غير متحقق" if language == "ar" else "Unverified"
+    parsed["domain_verification"] = _verify_reference_domain(text_content, extracted_url, language)
 
     return parsed
+
+
+def _verify_reference_domain(text_content: str, extracted_url: str, language: str = "ar") -> dict:
+    """Compare an observed URL host with a curated reference list only.
+
+    A match is evidence about domain alignment, never proof of sender identity.
+    """
+    from urllib.parse import urlsplit
+
+    raw = str(extracted_url or "").strip()
+    host = None
+    try:
+        host = (urlsplit(raw).hostname or "").lower().rstrip(".") or None
+    except ValueError:
+        host = None
+    if not host:
+        return {"status": "NO_URL", "observed_host": None, "reference_domain": None, "source": "CURATED_ALLOWLIST"}
+    matched = None
+    for _, (_, _, official_domain) in KNOWN_BRANDS.items():
+        domain = official_domain.lower().rstrip(".")
+        if host == domain or host.endswith("." + domain):
+            matched = domain
+            break
+    if matched:
+        return {"status": "MATCHED_CURATED_ALLOWLIST", "observed_host": host, "reference_domain": matched, "source": "CURATED_ALLOWLIST", "sender_identity_verified": False}
+    return {"status": "MISMATCH_OR_UNKNOWN", "observed_host": host, "reference_domain": None, "source": "CURATED_ALLOWLIST", "sender_identity_verified": False}
 
 
 def _local_sms_analysis(text_content: str, extracted_url: str = "", language: str = "ar", evidence: dict | None = None) -> dict:

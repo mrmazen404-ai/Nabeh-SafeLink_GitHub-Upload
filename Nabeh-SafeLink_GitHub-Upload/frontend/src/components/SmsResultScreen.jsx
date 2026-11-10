@@ -126,6 +126,9 @@ export default function SmsResultScreen({ result, onReset, activeTab, setActiveT
     ? (String(officialPortal).startsWith('http') ? officialPortal : `https://${officialPortal}`)
     : null;
   const actionSteps = Array.isArray(exp?.action_plan_steps) && exp.action_plan_steps.length > 0 ? exp.action_plan_steps : [];
+  const citations = Array.isArray(exp?.citations) ? exp.citations : (Array.isArray(result?.citations) ? result.citations : []);
+  const domainVerification = exp?.domain_verification || result?.domain_verification || {};
+  const smsEvidenceCard = result?.evidence_card || {};
 
   const handleCopyReport = () => {
     if (isGuest || !navigator.clipboard?.writeText) return;
@@ -251,6 +254,20 @@ export default function SmsResultScreen({ result, onReset, activeTab, setActiveT
                   </>
                 )}
               </div>
+              <details className="result-details-disclosure" style={{ marginTop: '14px' }}>
+                <summary>{lang === 'ar' ? 'بطاقة الأدلة القابلة للتدقيق' : 'Auditable SMS evidence card'}</summary>
+                <div style={{ marginTop: '12px', display: 'grid', gap: '10px', fontSize: '0.86rem' }}>
+                  <div><strong>{lang === 'ar' ? 'دور البطاقة:' : 'Card role:'}</strong> {smsEvidenceCard.decision?.decision_role || 'CONSERVATIVE_SMS_TRIAGE_NOT_AUTHENTICITY_PROOF'}</div>
+                  <div><strong>{lang === 'ar' ? 'المصدر:' : 'Decision source:'}</strong> <code>{smsEvidenceCard.decision?.source || result?.source || 'NOT_REPORTED'}</code></div>
+                  <div><strong>{lang === 'ar' ? 'التغطية:' : 'Coverage:'}</strong> <code>{smsEvidenceCard.coverage?.status || analysisCoverage}</code></div>
+                  <div><strong>{lang === 'ar' ? 'الروابط المفحوصة / غير المفحوصة:' : 'Scanned / not scanned links:'}</strong> {smsEvidenceCard.coverage?.links_scanned ?? linksScannedCount} / {smsEvidenceCard.coverage?.links_not_scanned ?? linksNotScannedCount}</div>
+                  {Array.isArray(smsEvidenceCard.limitations) && smsEvidenceCard.limitations.length > 0 && (
+                    <ul style={{ margin: 0, paddingInlineStart: '22px' }}>
+                      {smsEvidenceCard.limitations.map((item) => <li key={item}>{item}</li>)}
+                    </ul>
+                  )}
+                </div>
+              </details>
             </div>
 
             <h2 className="result-title">{config.title}</h2>
@@ -287,6 +304,28 @@ export default function SmsResultScreen({ result, onReset, activeTab, setActiveT
               </div>
 
               {exp.summary && <p className="explanation-text" style={{ fontSize: '0.95rem', lineHeight: '1.7' }}>{exp.summary}</p>}
+              <div style={{ marginTop: '14px', padding: '12px 14px', borderRadius: '10px', background: 'var(--color-bg-subtle)', border: '1px solid var(--color-border-subtle)', fontSize: '0.86rem', lineHeight: '1.6' }}>
+                <strong>{lang === 'ar' ? 'التحقق من محاذاة النطاق:' : 'Domain alignment check:'}</strong>{' '}
+                <span>{domainVerification.status || (lang === 'ar' ? 'غير متاح' : 'Not reported')}</span>
+                {domainVerification.observed_host && <span dir="ltr"> — {domainVerification.observed_host}</span>}
+                <div style={{ color: 'var(--color-text-subtle)' }}>
+                  {lang === 'ar'
+                    ? 'مطابقة النطاق مع قائمة مرجعية لا تثبت هوية مرسل الرسالة أو أصالة المحتوى.'
+                    : 'Matching a host against a curated reference list does not verify the sender or message authenticity.'}
+                </div>
+              </div>
+              {citations.length > 0 && (
+                <details className="result-details-disclosure" style={{ marginTop: '12px' }}>
+                  <summary>{lang === 'ar' ? `المصادر التي أعادها البحث (${citations.length})` : `Grounding sources returned (${citations.length})`}</summary>
+                  <ul style={{ marginTop: '10px', paddingInlineStart: '22px' }}>
+                    {citations.map((citation, index) => (
+                      <li key={`${citation.url}-${index}`}>
+                        <a href={citation.url} target="_blank" rel="noopener noreferrer">{citation.title || citation.url}</a>
+                      </li>
+                    ))}
+                  </ul>
+                </details>
+              )}
               {geminiClassification && (
                 <div className="explanation-text" style={{ marginTop: '10px', fontWeight: 600 }}>
                   {usesGemini

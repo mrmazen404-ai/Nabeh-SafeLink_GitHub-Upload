@@ -154,3 +154,27 @@ def test_gemini_capacity_limit_returns_explicit_local_fallback(monkeypatch):
     assert result["provider"] == "LOCAL_RULES"
     assert result["provider_status"] == "FALLBACK"
     assert result["fallback_reason"] == "GEMINI_CAPACITY_LIMITED"
+
+
+def test_grounding_citations_are_taken_only_from_provider_metadata():
+    from app.gemini.client import _extract_grounding_citations
+
+    response = SimpleNamespace(candidates=[SimpleNamespace(grounding_metadata=SimpleNamespace(
+        grounding_chunks=[
+            SimpleNamespace(web=SimpleNamespace(title="Official source", uri="https://source.example/a")),
+            SimpleNamespace(web=SimpleNamespace(title="Duplicate", uri="https://source.example/a")),
+            SimpleNamespace(web=SimpleNamespace(title="Ignored", uri="javascript:alert(1)")),
+        ]
+    ))])
+    assert _extract_grounding_citations(response) == [{"title": "Official source", "url": "https://source.example/a"}]
+
+
+def test_domain_alignment_is_not_sender_authentication():
+    from app.gemini.client import _sanitize_official_portal_url
+
+    matched = _sanitize_official_portal_url({}, "رسالة من Google https://accounts.google.com/login", "https://accounts.google.com/login", "en")
+    assert matched["domain_verification"]["status"] == "MATCHED_CURATED_ALLOWLIST"
+    assert matched["domain_verification"]["sender_identity_verified"] is False
+
+    mismatch = _sanitize_official_portal_url({}, "رسالة من Google https://google-login.example", "https://google-login.example", "en")
+    assert mismatch["domain_verification"]["status"] == "MISMATCH_OR_UNKNOWN"

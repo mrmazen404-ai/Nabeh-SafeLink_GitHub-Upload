@@ -15,7 +15,7 @@ from uuid import uuid4
 
 from app.db.supabase_client import supabase
 from app.observability import elapsed_ms, log_event, resource_id, safe_error
-from app.gemini.client import generate_explanation, analyze_sms_message
+from app.gemini.client import generate_explanation, analyze_sms_message, _sanitize_official_portal_url
 from app.ml.predictor import BRANDS, SUSPICIOUS_EXTENSIONS, SUSPICIOUS_WORDS, extract_features, predict_url, predict_url_async
 from app.virustotal.client import check_url_virustotal
 from app.dashboard.realtime import manager
@@ -187,6 +187,8 @@ def _build_url_evidence_card(target_url: str, combined: dict, ml_result: dict, v
             "explanation": {
                 "provider": explanation.get("provider", "LOCAL_RULES"),
                 "role": "SUPPORTING_EXPLANATION_NOT_DECISION_SOURCE",
+                "citations": explanation.get("citations", []),
+                "domain_verification": explanation.get("domain_verification", {"status": "NOT_REPORTED", "source": "CURATED_ALLOWLIST"}),
             },
         },
         "url_observations": {
@@ -807,6 +809,10 @@ class ScanService:
                 )
                 ai_analysis.update(provider_status="FALLBACK", fallback_reason="GEMINI_PROVIDER_ERROR", input_truncated=len(text_content or "") > 600)
 
+        # Apply the same independent, curated-domain check to Gemini and local fallbacks.
+        ai_analysis = _sanitize_official_portal_url(
+            ai_analysis, text_content, selected_url or extracted_url, language
+        )
         local_text = cls.analyze_text_phishing(text_content, bool(extracted_url))
         ai_class = str(ai_analysis.get("classification", "UNKNOWN")).upper()
         if ai_class == "SAFE":
@@ -859,11 +865,62 @@ class ScanService:
             "action_plan_steps": ai_analysis.get("action_plan_steps", []),
             "lure_type": ai_analysis.get("lure_type", "غير محدد"),
             "authenticity_status": ai_analysis.get("authenticity_status", "غير متحقق" if language == "ar" else "Unverified"),
+            "citations": ai_analysis.get("citations", []),
+            "domain_verification": ai_analysis.get("domain_verification", {"status": "NOT_REPORTED", "source": "CURATED_ALLOWLIST"}),
             "limitations": ai_analysis.get("limitations", []),
             "fraud_probability": fraud_prob,
+            "calibration_status": "NOT_CALIBRATED",
             "urgency_pressure_score": None,
             "credential_theft_score": None,
             "identity_spoofing_score": None,
+        }
+
+        sms_evidence_card = {
+            "schema_version": "1.0",
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "decision": {
+                "classification": str(classification).upper(),
+                "source": ai_analysis.get("provider", "LOCAL_RULES"),
+                "decision_role": "CONSERVATIVE_SMS_TRIAGE_NOT_AUTHENTICITY_PROOF",
+            },
+            "coverage": {
+                "status": analysis_coverage,
+                "reasons": coverage_reasons,
+                "message_characters": len(text_content or ""),
+                "gemini_characters_analyzed": min(len(text_content or ""), 600),
+                "calibration_status": "NOT_CALIBRATED",
+                "links_detected": len(all_extracted_urls) + len(unscanned_url_candidates),
+                "links_scanned": len(embedded_url_analyses),
+                "links_not_scanned": unscanned_link_count,
+            },
+            "message_observations": {
+                "has_embedded_url": bool(all_extracted_urls),
+                "text_indicators": local_text.get("indicators", []),
+                "input_digest": resource_id(text_content),
+            },
+            "links": [
+                {
+                    "url": item["url"],
+                    "classification": item["combined"].get("classification", "UNKNOWN"),
+                    "ml_source": item["ml"].get("source", "N/A"),
+                    "virustotal_status": item["virustotal"].get("status", "UNKNOWN"),
+                    "provider_status": item["virustotal"].get("provider_status", "NOT_REPORTED_BY_PROVIDER"),
+                }
+                for item in embedded_url_analyses
+            ],
+            "sources": {
+                "ml_model": {"status": ml_result.get("source", "NOT_RUN"), "classification": ml_result.get("classification", "UNKNOWN")},
+                "virustotal": {"status": vt_result.get("provider_status", vt_result.get("status", "NOT_RUN")), "classification": vt_result.get("status", "UNKNOWN")},
+                "gemini": {"provider": ai_analysis.get("provider", "NOT_RUN"), "status": ai_analysis.get("provider_status", "NOT_REPORTED"), "citations": ai_analysis.get("citations", [])},
+                "domain_verification": ai_analysis.get("domain_verification", {"status": "NOT_REPORTED", "source": "CURATED_ALLOWLIST"}),
+                "calibration_status": "NOT_CALIBRATED",
+            },
+            "limitations": [
+                "SMS_SENDER_IDENTITY_NOT_VERIFIED",
+                "NO_CALIBRATED_SMS_PROBABILITY",
+                "UNSCANNED_OR_DEFANGED_LINKS_NOT_VERDICTED",
+                "GROUNDING_SOURCES_ARE_SUPPORTING_CONTEXT_NOT_AUTHENTICATION",
+            ],
         }
 
         return {
@@ -895,6 +952,7 @@ class ScanService:
             "classification": classification,
             "confidence": confidence,
             "fraud_probability": fraud_prob,
+            "calibration_status": "NOT_CALIBRATED",
             "source": ai_analysis.get("provider", "GEMINI_AI"),
             "text_analysis": {
                 "has_embedded_url": bool(extracted_url),
@@ -954,11 +1012,16 @@ class ScanService:
                     "classification": ai_analysis.get("classification", "UNKNOWN"),
                     "summary": ai_analysis.get("summary", ""),
                     "recommendation": ai_analysis.get("recommendation", ""),
+                    "citations": ai_analysis.get("citations", []),
+                    "domain_verification": ai_analysis.get("domain_verification", {"status": "NOT_REPORTED", "source": "CURATED_ALLOWLIST"}),
                 },
             },
             "explanation": explanation,
+            "evidence_card": sms_evidence_card,
             "virustotal": vt_result,
             "virustotal_results": [item["virustotal"] for item in embedded_url_analyses],
+            "citations": ai_analysis.get("citations", []),
+            "domain_verification": ai_analysis.get("domain_verification", {"status": "NOT_REPORTED", "source": "CURATED_ALLOWLIST"}),
             "ml_model": {
                 "classification": ml_result.get("classification", "UNKNOWN"),
                 "confidence": None,

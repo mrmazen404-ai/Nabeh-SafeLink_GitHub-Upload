@@ -314,4 +314,19 @@ def test_sms_reports_message_truncation_and_gemini_coverage(monkeypatch):
     assert result["message_characters"] == len(message)
     assert result["gemini_characters_analyzed"] == 600
     assert result["explanation"]["input_truncated"] is True
+
+
+def test_sms_returns_auditable_evidence_card_without_sender_authentication(monkeypatch):
+    from app.scans import service as scan_service
+    from app.config import settings
+
+    monkeypatch.setattr(scan_service, "setting_enabled_fail_closed", lambda _key: False)
+    monkeypatch.setattr(settings, "SCAN_TOTAL_TIMEOUT_SECONDS", 5)
+    result = asyncio.run(ScanService.process_text_scan("افتح https://example.com/login", language="ar"))
+
+    card = result["evidence_card"]
+    assert card["schema_version"] == "1.0"
+    assert card["decision"]["decision_role"] == "CONSERVATIVE_SMS_TRIAGE_NOT_AUTHENTICITY_PROOF"
+    assert "SMS_SENDER_IDENTITY_NOT_VERIFIED" in card["limitations"]
+    assert card["coverage"]["links_scanned"] == 1
 from types import SimpleNamespace
