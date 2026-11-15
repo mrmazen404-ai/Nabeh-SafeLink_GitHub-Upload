@@ -154,6 +154,11 @@ def test_evidence_card_uses_same_fusion_rule_and_withholds_model_probability():
     assert card["decision"]["inputs"]["virustotal_counts"]["malicious"] == 3
     assert card["sources"]["virustotal"]["scanner_results"][0]["result"] == "Phishing"
     assert card["sources"]["ml_model"]["feature_attribution"] == "NOT_AVAILABLE"
+    assert card["sources"]["ml_model"]["role"] == "SECURITY_SIGNAL_NOT_MODEL_ATTRIBUTION"
+    assert card["sources"]["virustotal"]["role"] == "PROVIDER_FACTS_ONLY"
+    assert card["sources"]["explanation"]["role"] == "SUPPORTING_EXPLANATION_NOT_DECISION_SOURCE"
+    assert card["decision"]["audit"]["rules_applied"] == ["RULE_VT_MALICIOUS_ENGINE_CONSENSUS"]
+    assert card["decision"]["audit"]["audit_status"] == "EXACT_RULE_MAPPED"
     assert card["decision"]["thresholds"]["dangerous_min_malicious_engines"] == 3
     assert card["decision"]["thresholds"]["suspicious_min_vt_suspicious_engines"] == 2
     assert "phishing_prob" not in str(card)
@@ -215,3 +220,18 @@ def test_virustotal_not_configured_status_is_explicit(monkeypatch):
     assert result["status"] == "UNKNOWN"
     assert result["provider_status"] == "NOT_CONFIGURED"
     assert result["error"] == "VIRUSTOTAL_API_KEY not set"
+
+
+def test_unknown_card_exposes_provider_reason_codes_without_inventing_verdicts():
+    card = _build_url_evidence_card(
+        "https://example.com",
+        {"classification": "UNKNOWN", "decision_code": "INSUFFICIENT_EVIDENCE"},
+        {"classification": "UNKNOWN", "source": "MODEL_UNAVAILABLE"},
+        {"status": "UNKNOWN", "provider_status": "ANALYSIS_STALE"},
+        {"provider": "LOCAL_TIMEOUT_FALLBACK", "provider_status": "FALLBACK", "fallback_reason": "GEMINI_TIMEOUT"},
+    )
+
+    assert card["decision"]["unknown"]["is_unknown"] is True
+    assert card["decision"]["unknown"]["reason_codes"] == ["ML_MODEL_UNAVAILABLE", "VT_ANALYSIS_STALE"]
+    assert card["sources"]["explanation"]["provider_status"] == "FALLBACK"
+    assert card["sources"]["explanation"]["fallback_reason"] == "GEMINI_TIMEOUT"

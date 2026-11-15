@@ -40,6 +40,8 @@ export default function UrlEvidenceCard({ card, lang = 'ar', t }) {
   const vt = sources.virustotal || {};
   const ml = sources.ml_model || {};
   const explanationSource = sources.explanation || {};
+  const decisionAudit = decision.audit || {};
+  const unknownAudit = decision.unknown || {};
   const citations = Array.isArray(explanationSource.citations) ? explanationSource.citations : [];
   const domainVerification = explanationSource.domain_verification || {};
   const counts = vt.counts || {};
@@ -103,6 +105,18 @@ export default function UrlEvidenceCard({ card, lang = 'ar', t }) {
           <span><strong>{text('RuleLabel')}:</strong> <code>{decision.code || 'INSUFFICIENT_EVIDENCE'}</code></span>
           <span><strong>{text('Policy')}:</strong> <code>{decision.policy_version || '—'}</code></span>
         </div>
+        {Array.isArray(decisionAudit.rules_applied) && decisionAudit.rules_applied.length > 0 && (
+          <div className="url-evidence-note" role="note">
+            <strong>{lang === 'ar' ? 'تدقيق الدمج — القاعدة المطبقة: ' : 'Fusion audit — applied rule: '}</strong>
+            <code>{decisionAudit.rules_applied.join(lang === 'ar' ? '، ' : ', ')}</code>
+          </div>
+        )}
+        {unknownAudit.is_unknown && Array.isArray(unknownAudit.reason_codes) && (
+          <div className="url-evidence-note" role="status">
+            <strong>{lang === 'ar' ? 'أسباب UNKNOWN: ' : 'UNKNOWN reasons: '}</strong>
+            <code>{unknownAudit.reason_codes.join(lang === 'ar' ? '، ' : ', ')}</code>
+          </div>
+        )}
         {thresholdRows.length > 0 && (
           <details className="url-evidence-details">
             <summary>{text('PolicyThresholds')}</summary>
@@ -121,6 +135,9 @@ export default function UrlEvidenceCard({ card, lang = 'ar', t }) {
             <div><dt>{text('Classification')}</dt><dd><code>{ml.classification || 'UNKNOWN'}</code></dd></div>
             <div><dt>{text('Source')}</dt><dd><code>{ml.source || 'NOT_REPORTED'}</code></dd></div>
           </dl>
+          <p className="url-evidence-note">
+            {lang === 'ar' ? 'هذا مصدر إشارة أمنية؛ لا تعرض البطاقة مساهمات ميزات LightGBM الفعلية.' : 'This is a security signal; this card does not expose actual LightGBM feature contributions.'}
+          </p>
           <p className="url-evidence-note">{text('ModelAttribution')}</p>
         </section>
 
@@ -136,6 +153,7 @@ export default function UrlEvidenceCard({ card, lang = 'ar', t }) {
             {formatTimestamp(vt.last_analysis_date, lang) && <div><dt>{text('ProviderTime')}</dt><dd>{formatTimestamp(vt.last_analysis_date, lang)} UTC</dd></div>}
             {formatTimestamp(vt.evidence_timestamp, lang) && <div><dt>{text('ReportTime')}</dt><dd>{formatTimestamp(vt.evidence_timestamp, lang)} UTC</dd></div>}
             {vt.error && <div><dt>{text('ErrorCode')}</dt><dd><code>{String(vt.error).slice(0, 100)}</code></dd></div>}
+            <div><dt>{lang === 'ar' ? 'دور المصدر' : 'Source role'}</dt><dd><code>{vt.role || 'PROVIDER_FACTS_ONLY'}</code></dd></div>
           </dl>
           {scanners.length > 0 ? (
             <details className="url-evidence-details">
@@ -186,6 +204,11 @@ export default function UrlEvidenceCard({ card, lang = 'ar', t }) {
             ? `حالة محاذاة النطاق: ${domainVerification.status || 'غير متاحة'} — لا تثبت هوية مالك النطاق.`
             : `Domain alignment: ${domainVerification.status || 'NOT_REPORTED'} — this does not prove domain ownership.`}
         </p>
+        <dl>
+          <div><dt>{lang === 'ar' ? 'حالة Gemini' : 'Gemini status'}</dt><dd><code>{explanationSource.provider_status || 'NOT_REPORTED'}</code></dd></div>
+          {explanationSource.fallback_reason && <div><dt>{lang === 'ar' ? 'سبب الاحتياط' : 'Fallback reason'}</dt><dd><code>{explanationSource.fallback_reason}</code></dd></div>}
+          <div><dt>{lang === 'ar' ? 'دور Gemini' : 'Gemini role'}</dt><dd><code>{explanationSource.role || 'SUPPORTING_EXPLANATION_NOT_DECISION_SOURCE'}</code></dd></div>
+        </dl>
         {citations.length > 0 ? (
           <ul>
             {citations.map((citation, index) => <li key={`${citation.url}-${index}`}><a href={citation.url} target="_blank" rel="noopener noreferrer">{citation.title || citation.url}</a></li>)}

@@ -141,6 +141,30 @@ def _build_url_evidence_card(target_url: str, combined: dict, ml_result: dict, v
         scanner_results_total = len(scanner_results)
     scanner_results_truncated = bool(vt_result.get("scanner_results_truncated", False)) or scanner_results_total > 100
     scanner_results_omitted = max(0, scanner_results_total - len(scanner_results))
+    rule_map = {
+        "VT_STRONG_CONSENSUS": "RULE_VT_MALICIOUS_ENGINE_CONSENSUS",
+        "VT_ML_CORROBORATION": "RULE_VT_AND_ML_CORROBORATION",
+        "ML_HIGH_CONFIDENCE_STRUCTURAL": "RULE_ML_HIGH_CONFIDENCE_PLUS_TWO_STRUCTURAL_SIGNALS",
+        "ML_VT_CONFLICT": "RULE_ML_DANGEROUS_CONFLICTED_BY_VT_SAFE",
+        "VT_SIGNAL": "RULE_VT_SIGNAL_SUSPICIOUS",
+        "ML_STRONG_SIGNAL_ONLY": "RULE_ML_STRONG_SIGNAL_CAPS_AT_SUSPICIOUS",
+        "ML_SUSPICIOUS_SIGNAL": "RULE_ML_SUSPICIOUS_CLASSIFICATION",
+        "SAFE_SOURCE_CONSENSUS": "RULE_VT_AND_ML_SAFE_CONSENSUS",
+        "HYBRID_WEIGHTED_SUSPICIOUS": "RULE_HYBRID_WEIGHTED_SUSPICIOUS",
+        "HYBRID_WEIGHTED_INCONCLUSIVE": "RULE_HYBRID_WEIGHTED_INCONCLUSIVE",
+        "INSUFFICIENT_EVIDENCE": "RULE_INSUFFICIENT_EVIDENCE",
+    }
+    decision_code = str(combined.get("decision_code", "INSUFFICIENT_EVIDENCE"))
+    unknown_reason_codes = []
+    if str(combined.get("classification", "UNKNOWN")).upper() == "UNKNOWN":
+        ml_source = str(ml_result.get("source", "NOT_REPORTED")).upper()
+        vt_provider_status = str(vt_result.get("provider_status", "NOT_REPORTED")).upper()
+        if ml_source in {"MODEL_UNAVAILABLE", "MODEL_ERROR", "MODEL_BUSY", "INVALID_URL", "NOT_APPLICABLE", "NOT_REPORTED"}:
+            unknown_reason_codes.append(f"ML_{ml_source}")
+        if vt_provider_status in {"NOT_CONFIGURED", "ANALYSIS_STALE", "ANALYSIS_DATE_MISSING", "ANALYSIS_DATE_INVALID", "TIMEOUT", "NETWORK_ERROR", "PROVIDER_ERROR", "BUSY", "PRIVACY_BLOCKED", "SUBMISSION_DISABLED", "NOT_APPLICABLE", "NOT_REPORTED"}:
+            unknown_reason_codes.append(f"VT_{vt_provider_status}")
+        if not unknown_reason_codes:
+            unknown_reason_codes.append("NO_PROVIDER_MEETS_A_DECISION_RULE")
 
     return {
         "schema_version": "1.0",
@@ -165,6 +189,16 @@ def _build_url_evidence_card(target_url: str, combined: dict, ml_result: dict, v
                 "ml_standalone_dangerous_min_probability": ML_STANDALONE_DANGEROUS_MIN_PROB,
                 "ml_standalone_dangerous_min_strong_signals": ML_STANDALONE_DANGEROUS_MIN_SIGNALS,
             },
+            "audit": {
+                "rules_applied": [rule_map[decision_code]] if decision_code in rule_map else [],
+                "rules_rejected": [],
+                "decision_reasons": [decision_code] if decision_code in rule_map else [],
+                "audit_status": "EXACT_RULE_MAPPED" if decision_code in rule_map else "DECISION_CODE_NOT_MAPPED",
+            },
+            "unknown": {
+                "is_unknown": bool(unknown_reason_codes),
+                "reason_codes": unknown_reason_codes,
+            },
         },
         "sources": {
             "ml_model": {
@@ -173,6 +207,7 @@ def _build_url_evidence_card(target_url: str, combined: dict, ml_result: dict, v
                 "source": ml_result.get("source", "NOT_REPORTED"),
                 "strong_signals": _get_ml_strong_signals(ml_result),
                 "feature_attribution": "NOT_AVAILABLE",
+                "role": "SECURITY_SIGNAL_NOT_MODEL_ATTRIBUTION",
             },
             "virustotal": {
                 "status": vt_result.get("provider_status", vt_status),
@@ -188,9 +223,13 @@ def _build_url_evidence_card(target_url: str, combined: dict, ml_result: dict, v
                 "scanner_results_truncated": scanner_results_truncated,
                 "scanner_results_omitted": scanner_results_omitted,
                 "error": str(vt_result.get("error"))[:160] if vt_result.get("error") else None,
+                "role": "PROVIDER_FACTS_ONLY",
             },
             "explanation": {
                 "provider": explanation.get("provider", "LOCAL_RULES"),
+                "provider_status": explanation.get("provider_status", "NOT_REPORTED"),
+                "fallback_reason": explanation.get("fallback_reason"),
+                "input_truncated": bool(explanation.get("input_truncated", False)),
                 "role": "SUPPORTING_EXPLANATION_NOT_DECISION_SOURCE",
                 "citations": explanation.get("citations", []),
                 "domain_verification": explanation.get("domain_verification", {"status": "NOT_REPORTED", "source": "CURATED_ALLOWLIST"}),
