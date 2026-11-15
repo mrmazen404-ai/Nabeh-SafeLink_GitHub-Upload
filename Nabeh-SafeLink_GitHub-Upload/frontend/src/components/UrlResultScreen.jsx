@@ -72,11 +72,17 @@ export default function UrlResultScreen({ result, onReset, activeTab, setActiveT
     ? (result.confidence * 100).toFixed(1)
     : null;
   const vt = result?.virustotal || {};
-  const ml = result?.ml_model || {};
+  const evidenceSources = result?.evidence_card?.sources || {};
+  const stageMl = result?.stages?.stage1_ml || {};
+  const responseMl = result?.ml_model || {};
+  const ml = Object.keys(responseMl).length > 0
+    ? responseMl
+    : (Object.keys(evidenceSources.ml_model || {}).length > 0 ? evidenceSources.ml_model : stageMl);
   const exp = result?.explanation || {};
   const targetUrl = result?.extracted_url || result?.input_value || '';
   const mlSource = String(ml.source || '').toUpperCase();
   const mlClassification = String(ml.classification || '').toUpperCase();
+  const hasMlSource = Boolean(mlSource || mlClassification || Object.keys(stageMl).length > 0);
   const hasUsableMlResult = mlSource === 'ML_MODEL'
     && ['SAFE', 'SUSPICIOUS', 'DANGEROUS'].includes(mlClassification);
   const mlStatusLabel = mlSource === 'INVALID_URL'
@@ -85,7 +91,9 @@ export default function UrlResultScreen({ result, onReset, activeTab, setActiveT
       ? (lang === 'ar' ? 'حدث خطأ أثناء تشغيل النموذج' : 'Model execution error')
       : mlSource === 'MODEL_UNAVAILABLE'
         ? (lang === 'ar' ? 'النموذج غير متاح' : 'Model unavailable')
-        : (lang === 'ar' ? 'النتيجة غير محسومة' : 'Inconclusive model result');
+        : mlSource === 'NOT_REPORTED' || !mlSource
+          ? (lang === 'ar' ? 'لم تُسجل حالة تشغيل النموذج' : 'Model execution status was not reported')
+          : (lang === 'ar' ? 'النتيجة غير محسومة' : 'Inconclusive model result');
   const vtStatus = String(vt.status || '').toUpperCase();
   const hasVtStatus = Boolean(vtStatus || vt.error);
 
@@ -146,10 +154,10 @@ export default function UrlResultScreen({ result, onReset, activeTab, setActiveT
               <span className="result-trust-title">
                 {lang === 'ar' ? 'فحص ودراسة أمان الرابط (URL Link Audit)' : 'URL LINK SECURITY AUDIT'}
               </span>
-              {hasUsableMlResult && <span><CpuIcon size={14} />LightGBM</span>}
+              {hasMlSource && <span><CpuIcon size={14} />LightGBM</span>}
               {totalEngines > 0 && <span><ShieldCheckIcon size={14} />VirusTotal</span>}
               {usesGemini && <span><SparklesIcon size={14} />Google Gemini</span>}
-              {!hasUsableMlResult && totalEngines <= 0 && !usesGemini && (
+              {!hasMlSource && totalEngines <= 0 && !usesGemini && (
                 <span>{lang === 'ar' ? 'لم تتوفر مصادر فحص كافية' : 'No analysis source returned a result'}</span>
               )}
             </div>
@@ -320,10 +328,12 @@ export default function UrlResultScreen({ result, onReset, activeTab, setActiveT
                 </div>
               </div>
             )}
-            {!hasUsableMlResult && mlSource && (
+            {(!hasUsableMlResult || !hasMlSource) && (
               <div className="card ml-details-block" role="status">
                 <div className="ml-header"><CpuIcon size={18} color="var(--color-secondary)" /><h3 className="details-title" style={{ margin: 0 }}>{t('result.mlModelTitle')}</h3></div>
-                <p className="muted" style={{ margin: '10px 0 0' }}>{mlStatusLabel}</p>
+                <p className="muted" style={{ margin: '10px 0 0' }}>
+                  {mlStatusLabel} <code style={{ marginInlineStart: '6px' }}>{mlSource || 'NOT_REPORTED'}</code>
+                </p>
               </div>
             )}
 
