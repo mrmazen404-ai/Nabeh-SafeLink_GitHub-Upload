@@ -10,6 +10,49 @@ def test_ml_alone_never_dangerous():
         f"Expected SUSPICIOUS, got {result['classification']}"
     print("✓ ML alone → SUSPICIOUS (not DANGEROUS)")
 
+def test_ml_high_confidence_with_two_structural_signals_is_dangerous():
+    vt = {"status": "UNKNOWN", "total_engines": 0}
+    ml = {
+        "classification": "DANGEROUS",
+        "phishing_prob": 0.995,
+        "source": "ML_MODEL",
+        "strong_signals": ["BRAND_IMPERSONATION", "CREDENTIAL_TERM"],
+    }
+    result = ScanService.combine_scan_results(vt, ml)
+    assert result["classification"] == "DANGEROUS"
+    assert result["decision_code"] == "ML_HIGH_CONFIDENCE_STRUCTURAL"
+    assert result["source"] == "ML_PLUS_URL_SIGNALS"
+
+def test_ml_high_confidence_with_one_structural_signal_stays_suspicious():
+    vt = {"status": "UNKNOWN", "total_engines": 0}
+    ml = {
+        "classification": "DANGEROUS",
+        "phishing_prob": 0.995,
+        "source": "ML_MODEL",
+        "strong_signals": ["CREDENTIAL_TERM"],
+    }
+    result = ScanService.combine_scan_results(vt, ml)
+    assert result["classification"] == "SUSPICIOUS"
+    assert result["decision_code"] == "ML_STRONG_SIGNAL_ONLY"
+
+def test_ml_structural_signal_does_not_override_consistent_vt_safe():
+    vt = {
+        "status": "SAFE",
+        "malicious": 0,
+        "suspicious": 0,
+        "harmless": 90,
+        "total_engines": 90,
+    }
+    ml = {
+        "classification": "DANGEROUS",
+        "phishing_prob": 0.995,
+        "source": "ML_MODEL",
+        "strong_signals": ["IPV4_HOST", "SUSPICIOUS_EXTENSION"],
+    }
+    result = ScanService.combine_scan_results(vt, ml)
+    assert result["classification"] == "SUSPICIOUS"
+    assert result["decision_code"] == "ML_VT_CONFLICT"
+
 def test_vt_consensus_is_dangerous():
     """VT with 3+ malicious engines must be DANGEROUS."""
     vt = {"status": "DANGEROUS", "malicious": 5, "total_engines": 92}

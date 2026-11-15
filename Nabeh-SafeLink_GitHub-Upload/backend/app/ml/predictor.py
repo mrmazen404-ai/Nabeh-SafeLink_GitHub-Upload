@@ -364,6 +364,30 @@ def extract_features(raw_url: str) -> dict:
     }
 
 
+def _strong_url_signals(url: str, features: dict) -> list[str]:
+    """Expose only explicit structural signals for conservative result fusion."""
+    parsed = urlsplit(url)
+    path_query = f"{parsed.path or ''}?{parsed.query or ''}".lower()
+    signals = []
+    if features.get("has_ip_host"):
+        signals.append("IPV4_HOST")
+    if features.get("has_punycode"):
+        signals.append("PUNYCODE_HOST")
+    if features.get("has_at_symbol"):
+        signals.append("AT_SYMBOL")
+    if features.get("nonstandard_port"):
+        signals.append("NONSTANDARD_PORT")
+    if features.get("brand_impersonation"):
+        signals.append("BRAND_IMPERSONATION")
+    if features.get("suspicious_extension"):
+        signals.append("SUSPICIOUS_EXTENSION")
+    if features.get("many_hyphens_domain"):
+        signals.append("MANY_HYPHENS_DOMAIN")
+    if re.search(r"(?:password|passwd|otp|cvv|card|token|credential)", path_query):
+        signals.append("CREDENTIAL_TERM")
+    return signals
+
+
 def predict_url(url: str) -> dict:
     raw_value = str(url or "").strip()
     if not raw_value:
@@ -428,6 +452,7 @@ def predict_url(url: str) -> dict:
         feature_names = model_bundle["feature_names"]
         threshold = model_bundle.get("threshold", 0.425)
         features = extract_features(url)
+        strong_signals = _strong_url_signals(url, features)
         values = [float(features[name]) for name in feature_names]
 
         if "model" in model_bundle:
@@ -466,6 +491,7 @@ def predict_url(url: str) -> dict:
             "source": "ML_MODEL",
             "raw_classification": raw_classification,
             "context_gated": context_gated,
+            "strong_signals": strong_signals,
         }
     except Exception:
         return {

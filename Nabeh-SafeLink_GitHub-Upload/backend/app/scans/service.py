@@ -29,11 +29,13 @@ logger = logging.getLogger(__name__)
 _METRIC_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="nabeh-scan-metric")
 _METRIC_SLOT = threading.BoundedSemaphore(1)
 MAX_EMBEDDED_URLS = 5
-URL_FUSION_POLICY_VERSION = "1.0.0"
+URL_FUSION_POLICY_VERSION = "1.1.0"
 VT_DANGEROUS_MIN_ENGINES = 3
 VT_ML_CORROBORATION_MAX_ENGINES = 2
 ML_DANGEROUS_CORROBORATION_MIN_PROB = 0.85
 ML_STRONG_SIGNAL_MIN_PROB = 0.60
+ML_STANDALONE_DANGEROUS_MIN_PROB = 0.98
+ML_STANDALONE_DANGEROUS_MIN_SIGNALS = 2
 VT_MULTIPLE_SUSPICIOUS_MIN = 2
 HYBRID_SUSPICIOUS_THRESHOLD = 0.40
 
@@ -155,11 +157,14 @@ def _build_url_evidence_card(target_url: str, combined: dict, ml_result: dict, v
                 "virustotal_counts": vt_counts,
                 "ml_classification": str(ml_result.get("classification", "UNKNOWN")).upper(),
                 "ml_source": ml_result.get("source", "NOT_REPORTED"),
+                "ml_strong_signals": _get_ml_strong_signals(ml_result),
             },
             "thresholds": {
                 "dangerous_min_malicious_engines": VT_DANGEROUS_MIN_ENGINES,
                 "dangerous_with_ml_max_malicious_engines": VT_ML_CORROBORATION_MAX_ENGINES,
                 "suspicious_min_vt_suspicious_engines": VT_MULTIPLE_SUSPICIOUS_MIN,
+                "ml_standalone_dangerous_min_probability": ML_STANDALONE_DANGEROUS_MIN_PROB,
+                "ml_standalone_dangerous_min_strong_signals": ML_STANDALONE_DANGEROUS_MIN_SIGNALS,
             },
         },
         "sources": {
@@ -167,6 +172,7 @@ def _build_url_evidence_card(target_url: str, combined: dict, ml_result: dict, v
                 "status": "COMPLETED" if ml_result.get("source") == "ML_MODEL" else ml_result.get("source", "UNAVAILABLE_OR_NOT_RUN"),
                 "classification": str(ml_result.get("classification", "UNKNOWN")).upper(),
                 "source": ml_result.get("source", "NOT_REPORTED"),
+                "strong_signals": _get_ml_strong_signals(ml_result),
                 "feature_attribution": "NOT_AVAILABLE",
             },
             "virustotal": {
@@ -205,6 +211,30 @@ def _build_url_evidence_card(target_url: str, combined: dict, ml_result: dict, v
             "RESULT_APPLIES_TO_SOURCES_AVAILABLE_AT_SCAN_TIME",
         ],
     }
+
+
+def _get_ml_strong_signals(ml_result: dict) -> list[str]:
+    """Return an allow-listed set of structural URL signals from the ML stage.
+
+    The fusion policy must never infer structural evidence from the ML label or
+    probability alone.  The predictor supplies these names explicitly; keeping
+    the allow-list here prevents arbitrary provider/model fields from becoming
+    dangerous evidence.
+    """
+    allowed = {
+        "IPV4_HOST",
+        "PUNYCODE_HOST",
+        "AT_SYMBOL",
+        "NONSTANDARD_PORT",
+        "BRAND_IMPERSONATION",
+        "SUSPICIOUS_EXTENSION",
+        "MANY_HYPHENS_DOMAIN",
+        "CREDENTIAL_TERM",
+    }
+    raw = ml_result.get("strong_signals", [])
+    if not isinstance(raw, (list, tuple, set)):
+        return []
+    return sorted({str(item).upper() for item in raw if str(item).upper() in allowed})
 
 
 class ScanPersistenceError(Exception):
@@ -319,10 +349,15 @@ class ScanService:
     def combine_scan_results(vt_result: dict, ml_result: dict) -> dict:
         """Combine 3-Stage Scan Results (Stage 1: ML, Stage 2: VirusTotal) into an accurate verdict.
 
-        Core security principle: ML alone is NEVER sufficient for DANGEROUS classification.
+        Core security principle: an ML probability alone is never sufficient for
+        DANGEROUS classification.  A calibrated high ML signal may independently
+        produce DANGEROUS only when the predictor also reports at least two
+        explicit structural URL signals, and VirusTotal has not returned a
+        consistent SAFE verdict that directly conflicts with that decision.
         DANGEROUS requires either:
           (a) VirusTotal with 3+ malicious engines, OR
-          (b) VirusTotal with 1-2 malicious AND ML corroboration (high confidence)
+          (b) VirusTotal with 1-2 malicious AND ML corroboration (high confidence), OR
+          (c) ML at a very high threshold AND two strong structural URL signals.
         """
         vt_result = vt_result or {}
         ml_result = ml_result or {}
@@ -385,6 +420,48 @@ class ScanService:
                 "weighted_score": round(ml_prob, 4),
                 "decision_code": "VT_ML_CORROBORATION",
                 "source": f"DANGEROUS_CORROBORATED (VT:{vt_malicious} + ML:{ml_prob:.2f})",
+            }
+
+        # Rule 1c: high-confidence ML plus independent structural URL evidence.
+        # A current, consistent VT SAFE result is treated as a conflict rather
+        # than silently overridden.  UNKNOWN, stale, unavailable, or blocked
+        # VT does not prevent this conservative ML+structure decision.
+        ml_strong_signals = _get_ml_strong_signals(ml_result)
+        vt_safe_conflict = has_vt and vt_status == "SAFE"
+        if (
+            has_ml
+            and ml_class == "DANGEROUS"
+            and ml_prob >= ML_STANDALONE_DANGEROUS_MIN_PROB
+            and len(ml_strong_signals) >= ML_STANDALONE_DANGEROUS_MIN_SIGNALS
+            and not vt_safe_conflict
+        ):
+            return {
+                "classification": "DANGEROUS",
+                "confidence": round(min(0.99, ml_prob), 4),
+                "weighted_score": round(ml_prob, 4),
+                "decision_code": "ML_HIGH_CONFIDENCE_STRUCTURAL",
+                "source": "ML_PLUS_URL_SIGNALS",
+                "confirmation_status": "ML_STRUCTURAL_ONLY",
+                "external_confirmation": "NOT_REQUIRED",
+                "strong_signals": ml_strong_signals,
+            }
+
+        # Preserve an auditable conflict reason when a strong ML result is
+        # contradicted by a consistent clean VirusTotal result.
+        if (
+            vt_safe_conflict
+            and has_ml
+            and ml_class == "DANGEROUS"
+            and ml_prob >= ML_STANDALONE_DANGEROUS_MIN_PROB
+            and len(ml_strong_signals) >= ML_STANDALONE_DANGEROUS_MIN_SIGNALS
+        ):
+            return {
+                "classification": "SUSPICIOUS",
+                "confidence": round(min(0.80, ml_prob * 0.9), 4),
+                "weighted_score": round(ml_prob, 4),
+                "decision_code": "ML_VT_CONFLICT",
+                "source": "ML_HIGH_VT_SAFE_CONFLICT",
+                "strong_signals": ml_strong_signals,
             }
 
         # ═══════════════════════════════════════════════════════════════════
