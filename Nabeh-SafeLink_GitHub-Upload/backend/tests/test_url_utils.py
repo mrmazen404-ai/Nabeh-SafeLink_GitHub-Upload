@@ -1,6 +1,6 @@
 import pytest
 
-from app.scans.url_utils import extract_defanged_urls_from_text, extract_web_urls_from_text, normalize_web_url
+from app.scans.url_utils import extract_defanged_urls_from_text, extract_web_urls_from_text, normalize_defanged_url, normalize_web_url
 
 
 @pytest.mark.parametrize(
@@ -81,6 +81,24 @@ def test_extract_defanged_urls_reports_original_spelling_without_rewriting():
         "example[.]com/login",
         "https[:]//bad.example",
     ]
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("hxxps://evil.example/path", "https://evil.example/path"),
+        ("hxxp://evil.example/path", "http://evil.example/path"),
+        ("https[:]//evil[.]example/login", "https://evil.example/login"),
+        ("example[.]com/login", "https://example.com/login"),
+    ],
+)
+def test_normalize_defanged_url_restores_only_known_spellings(raw, expected):
+    assert normalize_defanged_url(raw) == expected
+
+
+def test_normalize_defanged_url_rejects_ambiguous_defanged_text():
+    with pytest.raises(ValueError):
+        normalize_defanged_url("hxxps://user:password@evil[.]example/login")
 
 
 def test_extractor_does_not_return_a_valid_prefix_of_malformed_host_or_port():

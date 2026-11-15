@@ -150,7 +150,7 @@ def test_extract_urls_from_text_returns_distinct_links_in_message_order():
 
 
 @pytest.mark.anyio
-async def test_sms_scan_routes_each_embedded_url_and_reports_unscanned_links(monkeypatch):
+async def test_sms_scan_routes_all_embedded_urls_and_reports_full_coverage(monkeypatch):
     ml_urls = []
     vt_urls = []
 
@@ -169,27 +169,35 @@ async def test_sms_scan_routes_each_embedded_url_and_reports_unscanned_links(mon
 
     result = await ScanService.process_text_scan("رسالة تحتوي على: " + " ".join(urls))
 
-    expected_scanned = urls[:5]
+    expected_scanned = urls
     assert sorted(ml_urls) == sorted(expected_scanned)
     assert sorted(vt_urls) == sorted(expected_scanned)
     assert result["extracted_urls"] == urls
-    assert result["unscanned_urls"] == urls[5:]
-    assert result["links_scanned_count"] == 5
-    assert result["links_not_scanned_count"] == 1
+    assert result["unscanned_urls"] == []
+    assert result["links_scanned_count"] == 6
+    assert result["links_not_scanned_count"] == 0
+    assert result["analysis_coverage"] == "FULL"
     assert result["classification"] == "UNKNOWN"
 
 
 @pytest.mark.anyio
-async def test_sms_scan_reports_defanged_urls_without_sending_them_to_providers(monkeypatch):
+async def test_sms_scan_normalizes_defanged_urls_before_sending_them_to_providers(monkeypatch):
+    ml_urls = []
+    vt_urls = []
+    monkeypatch.setattr("app.scans.service.predict_url", lambda url: ml_urls.append(url) or {"classification": "UNKNOWN", "source": "MODEL_UNAVAILABLE"})
+    async def fake_virustotal(url):
+        vt_urls.append(url)
+        return {"status": "UNKNOWN", "total_engines": 0}
+    monkeypatch.setattr("app.scans.service.check_url_virustotal", fake_virustotal)
     monkeypatch.setattr("app.scans.service.setting_enabled_fail_closed", lambda *_: False)
 
     result = await ScanService.process_text_scan(
         "تحقق من hxxps://evil.example/path أو example[.]org/login"
     )
 
-    assert result["extracted_urls"] == []
-    assert result["unscanned_url_candidates"] == [
-        "hxxps://evil.example/path",
-        "example[.]org/login",
-    ]
-    assert result["links_scanned_count"] == 0
+    expected = ["https://evil.example/path", "https://example.org/login"]
+    assert result["extracted_urls"] == expected
+    assert result["unscanned_url_candidates"] == []
+    assert sorted(ml_urls) == sorted(expected)
+    assert sorted(vt_urls) == sorted(expected)
+    assert result["links_scanned_count"] == 2

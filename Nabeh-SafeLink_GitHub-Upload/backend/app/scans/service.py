@@ -23,12 +23,11 @@ from app.config import settings
 from app.public.metrics import record_platform_scan_metric
 from app.system_settings import setting_enabled_fail_closed
 from app.scans.text_rules import analyze_message_indicators
-from app.scans.url_utils import extract_defanged_urls_from_text, extract_web_urls_from_text, normalize_web_url
+from app.scans.url_utils import extract_defanged_urls_from_text, extract_web_urls_from_text, normalize_defanged_url, normalize_web_url
 
 logger = logging.getLogger(__name__)
 _METRIC_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="nabeh-scan-metric")
 _METRIC_SLOT = threading.BoundedSemaphore(1)
-MAX_EMBEDDED_URLS = 5
 URL_FUSION_POLICY_VERSION = "1.1.0"
 VT_DANGEROUS_MIN_ENGINES = 3
 VT_ML_CORROBORATION_MAX_ENGINES = 2
@@ -745,20 +744,31 @@ class ScanService:
         started = time.perf_counter()
         log_event(logger, logging.INFO, "scan_started", operation_id=operation_id, input_type="TEXT", mode="sms")
         deadline = asyncio.get_running_loop().time() + settings.SCAN_TOTAL_TIMEOUT_SECONDS
-        all_extracted_urls = cls.extract_urls_from_text(text_content)
-        unscanned_url_candidates = extract_defanged_urls_from_text(text_content)
-        extracted_urls = all_extracted_urls[:MAX_EMBEDDED_URLS]
-        unscanned_urls = all_extracted_urls[len(extracted_urls):]
+        explicit_urls = cls.extract_urls_from_text(text_content)
+        raw_defanged_urls = extract_defanged_urls_from_text(text_content)
+        defanged_urls = []
+        unscanned_url_candidates = []
+        seen_urls = set(explicit_urls)
+        for raw_defanged_url in raw_defanged_urls:
+            try:
+                normalized_defanged_url = normalize_defanged_url(raw_defanged_url)
+            except ValueError:
+                unscanned_url_candidates.append(raw_defanged_url)
+                continue
+            if normalized_defanged_url not in seen_urls:
+                seen_urls.add(normalized_defanged_url)
+                defanged_urls.append(normalized_defanged_url)
+        all_extracted_urls = explicit_urls + defanged_urls
+        extracted_urls = all_extracted_urls
+        unscanned_urls = []
         message_input_truncated = len(text_content or "") > 600
         unscanned_url_count = len(unscanned_urls)
         unscanned_link_count = unscanned_url_count + len(unscanned_url_candidates)
         coverage_reasons = []
         if message_input_truncated:
             coverage_reasons.append("MESSAGE_TRUNCATED_FOR_GEMINI")
-        if unscanned_url_count:
-            coverage_reasons.append("EMBEDDED_URL_LIMIT_REACHED")
         if unscanned_url_candidates:
-            coverage_reasons.append("DEFANGED_URL_NOT_SCANNED")
+            coverage_reasons.append("DEFANGED_URL_NOT_NORMALIZED")
         analysis_coverage = "PARTIAL" if coverage_reasons else "FULL"
         log_event(logger, logging.INFO, "scan_validation_succeeded", operation_id=operation_id, input_type="TEXT", mode="sms", links_detected=len(all_extracted_urls), links_scanned=len(extracted_urls))
         extracted_url = extracted_urls[0] if extracted_urls else ""
@@ -766,34 +776,36 @@ class ScanService:
         ml_semaphore = asyncio.Semaphore(2)
 
         async def analyze_embedded_url(url: str) -> dict:
-            try:
-                async with ml_semaphore:
-                    remaining_for_ml = max(0.0, deadline - asyncio.get_running_loop().time())
-                    ml = await predict_url_async(
-                        url,
-                        timeout=min(settings.SCAN_ML_TIMEOUT_SECONDS, remaining_for_ml),
-                        predictor_fn=predict_url,
-                    )
-            except Exception:
-                log_event(logger, logging.ERROR, "scan_ml_failed", operation_id=operation_id, provider="ML_MODEL", error_code="MODEL_ERROR")
-                ml = {"classification": "UNKNOWN", "confidence": None, "source": "ML_ERROR"}
+            async def run_ml() -> dict:
+                try:
+                    async with ml_semaphore:
+                        remaining_for_ml = max(0.0, deadline - asyncio.get_running_loop().time())
+                        return await predict_url_async(
+                            url,
+                            timeout=min(settings.SCAN_ML_TIMEOUT_SECONDS, remaining_for_ml),
+                            predictor_fn=predict_url,
+                        )
+                except Exception:
+                    log_event(logger, logging.ERROR, "scan_ml_failed", operation_id=operation_id, provider="ML_MODEL", error_code="MODEL_ERROR")
+                    return {"classification": "UNKNOWN", "confidence": None, "source": "ML_ERROR"}
 
-            async with semaphore:
-                remaining = max(0.0, deadline - asyncio.get_running_loop().time())
-                if remaining <= 0:
-                    vt = {"status": "UNKNOWN", "error": "SCAN_DEADLINE_EXCEEDED"}
-                else:
+            async def run_vt() -> dict:
+                async with semaphore:
+                    remaining = max(0.0, deadline - asyncio.get_running_loop().time())
+                    if remaining <= 0:
+                        return {"status": "UNKNOWN", "error": "SCAN_DEADLINE_EXCEEDED"}
                     try:
-                        vt = await asyncio.wait_for(
+                        return await asyncio.wait_for(
                             check_url_virustotal(url), timeout=min(3.0, remaining)
                         )
-
                     except asyncio.TimeoutError:
                         log_event(logger, logging.WARNING, "scan_virustotal_timeout", operation_id=operation_id, provider="VIRUSTOTAL", error_code="SCAN_DEADLINE_EXCEEDED")
-                        vt = {"status": "UNKNOWN", "error": "SCAN_DEADLINE_EXCEEDED"}
+                        return {"status": "UNKNOWN", "error": "SCAN_DEADLINE_EXCEEDED"}
                     except Exception as error:
                         log_event(logger, logging.ERROR, "scan_virustotal_failed", operation_id=operation_id, provider="VIRUSTOTAL", error_type=safe_error(error), error_code="VIRUSTOTAL_NETWORK_ERROR")
-                        vt = {"status": "UNKNOWN", "error": "VIRUSTOTAL_UNAVAILABLE"}
+                        return {"status": "UNKNOWN", "error": "VIRUSTOTAL_UNAVAILABLE"}
+
+            ml, vt = await asyncio.gather(run_ml(), run_vt())
             return {"url": url, "ml": ml, "virustotal": vt, "combined": cls.combine_scan_results(vt, ml)}
 
         embedded_url_analyses = await asyncio.gather(
@@ -921,7 +933,7 @@ class ScanService:
         # This SMS task has no independently calibrated probability model.
         confidence = None
         fraud_prob = None
-        log_event(logger, logging.INFO, "scan_succeeded", operation_id=operation_id, input_type="TEXT", mode="sms", classification=classification, provider=ai_analysis.get("provider"), links_scanned=len(embedded_url_analyses), links_not_scanned=unscanned_url_count, duration_ms=elapsed_ms(started))
+        log_event(logger, logging.INFO, "scan_succeeded", operation_id=operation_id, input_type="TEXT", mode="sms", classification=classification, provider=ai_analysis.get("provider"), links_scanned=len(embedded_url_analyses), links_not_scanned=unscanned_link_count, duration_ms=elapsed_ms(started))
 
         explanation = {
             "summary": ai_analysis.get("summary", ""),

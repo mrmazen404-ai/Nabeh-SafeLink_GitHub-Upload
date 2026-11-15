@@ -281,7 +281,7 @@ def test_multi_link_scan_public_evidence_matches_strongest_link(monkeypatch):
     assert result["stages"]["stage2_link_audit"]["results"][1]["classification"] == "DANGEROUS"
 
 
-def test_sms_reports_partial_coverage_for_defanged_links(monkeypatch):
+def test_sms_scans_normalizable_defanged_links_with_full_link_coverage(monkeypatch):
     from app.scans import service as scan_service
     from app.config import settings
 
@@ -293,10 +293,11 @@ def test_sms_reports_partial_coverage_for_defanged_links(monkeypatch):
         language="ar",
     ))
 
-    assert result["analysis_coverage"] == "PARTIAL"
-    assert "DEFANGED_URL_NOT_SCANNED" in result["coverage_reasons"]
-    assert result["unscanned_url_candidates"]
-    assert result["links_not_scanned_count"] >= 1
+    assert result["analysis_coverage"] == "FULL"
+    assert result["coverage_reasons"] == []
+    assert result["unscanned_url_candidates"] == []
+    assert result["links_scanned_count"] == 1
+    assert result["links_not_scanned_count"] == 0
 
 
 def test_sms_reports_message_truncation_and_gemini_coverage(monkeypatch):

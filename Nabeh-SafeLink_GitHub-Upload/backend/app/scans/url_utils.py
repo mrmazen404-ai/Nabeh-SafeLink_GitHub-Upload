@@ -175,3 +175,19 @@ def extract_defanged_urls_from_text(text: str) -> list[str]:
             seen.add(candidate)
             candidates.append(candidate)
     return candidates
+
+
+def normalize_defanged_url(value: str) -> str:
+    """Safely restore common defanged spellings and validate the live URL.
+
+    Only explicit, well-known substitutions are applied.  The resulting value
+    is passed through ``normalize_web_url`` so malformed hosts, credentials,
+    unsupported schemes, invalid ports, and control characters are rejected.
+    """
+    raw = str(value or "").strip()
+    if not raw:
+        raise ValueError("invalid_url")
+    restored = re.sub(r"^hxxps?\s*:\s*//", lambda match: "https://" if match.group(0).lower().startswith("hxxps") else "http://", raw, flags=re.IGNORECASE)
+    restored = re.sub(r"^(https?)\s*\[\s*:\s*\]\s*//", r"\1://", restored, flags=re.IGNORECASE)
+    restored = re.sub(r"\[\.\]|\(\.\)|\{\.\}", ".", restored)
+    return normalize_web_url(restored)
