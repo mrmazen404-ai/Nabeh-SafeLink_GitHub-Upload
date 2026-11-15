@@ -259,7 +259,7 @@ export default function UrlResultScreen({ result, onReset, activeTab, setActiveT
           <aside className="result-side-panel">
             {/* VirusTotal 92+ Engines Visual Proportional Distribution Chart */}
             {(totalEngines > 0 || hasVtStatus) && (
-              <div className="card details-block">
+              <div className="card details-block" style={{ order: 2 }}>
                 <h3 className="details-title">
                   <ShieldCheckIcon size={18} color="var(--color-secondary)" />
                   <span>{lang === 'ar' ? 'توزيع فحوصات المحركات العالمية (VirusTotal):' : 'VirusTotal Engine Distribution:'}</span>
@@ -310,7 +310,7 @@ export default function UrlResultScreen({ result, onReset, activeTab, setActiveT
 
             {/* LightGBM Model Prediction Details */}
             {ml.classification && hasUsableMlResult && (
-              <div className="card ml-details-block">
+              <div className="card ml-details-block" style={{ order: 1 }}>
                 <div className="ml-header">
                   <CpuIcon size={18} color="var(--color-secondary)" />
                   <h3 className="details-title" style={{ margin: 0 }}>{t('result.mlModelTitle')}</h3>
@@ -329,7 +329,7 @@ export default function UrlResultScreen({ result, onReset, activeTab, setActiveT
               </div>
             )}
             {(!hasUsableMlResult || !hasMlSource) && (
-              <div className="card ml-details-block" role="status">
+              <div className="card ml-details-block" role="status" style={{ order: 1 }}>
                 <div className="ml-header"><CpuIcon size={18} color="var(--color-secondary)" /><h3 className="details-title" style={{ margin: 0 }}>{t('result.mlModelTitle')}</h3></div>
                 <p className="muted" style={{ margin: '10px 0 0' }}>
                   {mlStatusLabel} <code style={{ marginInlineStart: '6px' }}>{mlSource || 'NOT_REPORTED'}</code>
@@ -338,7 +338,7 @@ export default function UrlResultScreen({ result, onReset, activeTab, setActiveT
             )}
 
             {/* Actions */}
-            <div className="card result-actions">
+            <div className="card result-actions" style={{ order: 3 }}>
               <button className="btn btn-primary" onClick={onReset} type="button">
                 <RefreshIcon size={18} color="#FFFFFF" />
                 <span>{t('result.scanNewBtn')}</span>
