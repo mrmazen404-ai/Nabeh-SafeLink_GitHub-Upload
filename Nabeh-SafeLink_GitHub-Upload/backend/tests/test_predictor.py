@@ -2,7 +2,7 @@ import json
 import os
 
 import app.ml.predictor as predictor
-from app.ml.predictor import extract_features, predict_url
+from app.ml.predictor import _calibrate_probability, extract_features, predict_url
 
 
 def test_invalid_url_is_unknown_not_dangerous():
@@ -100,3 +100,29 @@ def test_model_readiness_sanitizes_artifact_load_failure(monkeypatch, tmp_path):
 
     assert result == {"status": "unavailable", "code": "MODEL_ARTIFACT_LOAD_FAILED"}
     assert "private detail" not in str(result)
+
+
+def test_raw_probability_is_not_reported_as_calibrated_without_calibrator():
+    probability, metadata = _calibrate_probability({}, 0.91)
+
+    assert probability is None
+    assert metadata["status"] == "UNCALIBRATED"
+    assert metadata["reason"] == "CALIBRATION_ARTIFACT_NOT_AVAILABLE"
+
+
+def test_sigmoid_calibrator_returns_bounded_calibrated_probability():
+    class FakeCalibrator:
+        def predict_proba(self, values):
+            assert values == [[0.91]]
+            return [[0.265784, 0.734216]]
+
+    probability, metadata = _calibrate_probability(
+        {
+            "calibrator": FakeCalibrator(),
+            "calibration": {"method": "sigmoid", "version": "v1"},
+        },
+        0.91,
+    )
+
+    assert probability == 0.734216
+    assert metadata == {"status": "CALIBRATED", "method": "SIGMOID", "version": "v1"}

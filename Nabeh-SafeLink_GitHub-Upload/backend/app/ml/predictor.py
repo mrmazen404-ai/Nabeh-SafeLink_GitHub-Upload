@@ -204,6 +204,53 @@ def _portable_predict_proba(bundle: dict, values: list[float]) -> float:
     return 1.0 / (1.0 + math.exp(-raw_score))
 
 
+def _calibrate_probability(bundle: dict, raw_probability: float) -> tuple[float | None, dict]:
+    """Return a calibrated probability only when the artifact proves calibration.
+
+    The raw LightGBM score remains available to the internal fusion policy, but
+    it must never be presented to users as a calibrated probability. A future
+    artifact may contain a sklearn-style ``calibrator`` or explicit sigmoid
+    parameters produced by an independent, domain-disjoint calibration set.
+    """
+    metadata = bundle.get("calibration") if isinstance(bundle, dict) else None
+    if not isinstance(metadata, dict):
+        metadata = {}
+
+    calibrator = bundle.get("calibrator") if isinstance(bundle, dict) else None
+    if calibrator is not None and hasattr(calibrator, "predict_proba"):
+        calibrated = calibrator.predict_proba([[float(raw_probability)]])[0]
+        calibrated_probability = float(calibrated[-1])
+        if math.isfinite(calibrated_probability) and 0.0 <= calibrated_probability <= 1.0:
+            return calibrated_probability, {
+                "status": "CALIBRATED",
+                "method": str(metadata.get("method", "SIGMOID")).upper(),
+                "version": str(metadata.get("version", "UNVERSIONED")),
+            }
+
+    coefficient = metadata.get("sigmoid_coefficient")
+    intercept = metadata.get("sigmoid_intercept")
+    if coefficient is not None and intercept is not None:
+        try:
+            calibrated_probability = 1.0 / (
+                1.0 + math.exp(-(float(coefficient) * float(raw_probability) + float(intercept)))
+            )
+            if math.isfinite(calibrated_probability) and 0.0 <= calibrated_probability <= 1.0:
+                return calibrated_probability, {
+                    "status": "CALIBRATED",
+                    "method": str(metadata.get("method", "SIGMOID")).upper(),
+                    "version": str(metadata.get("version", "UNVERSIONED")),
+                }
+        except (TypeError, ValueError, OverflowError):
+            pass
+
+    return None, {
+        "status": "UNCALIBRATED",
+        "method": None,
+        "version": None,
+        "reason": "CALIBRATION_ARTIFACT_NOT_AVAILABLE",
+    }
+
+
 def normalize_url(value: str) -> str:
     s = str(value).strip()
     if not s:
@@ -464,6 +511,8 @@ def predict_url(url: str) -> dict:
         else:
             phishing_prob = _portable_predict_proba(model_bundle, values)
 
+        calibrated_probability, calibration = _calibrate_probability(model_bundle, phishing_prob)
+
         raw_classification = "UNKNOWN"
         context_gated = False
         if phishing_prob >= threshold:
@@ -486,7 +535,17 @@ def predict_url(url: str) -> dict:
         return {
             "classification": classification,
             "confidence": round(confidence, 4),
+            # Internal decision score. It is intentionally not a public
+            # calibrated probability unless calibration.status is CALIBRATED.
             "phishing_prob": round(phishing_prob, 4),
+            "raw_phishing_prob": round(phishing_prob, 6),
+            "calibrated_phishing_prob": (
+                round(calibrated_probability, 6) if calibrated_probability is not None else None
+            ),
+            "probability_status": calibration["status"],
+            "calibration_method": calibration.get("method"),
+            "calibration_version": calibration.get("version"),
+            "calibration_reason": calibration.get("reason"),
             # Keep the public source contract stable; expose the gate separately.
             "source": "ML_MODEL",
             "raw_classification": raw_classification,

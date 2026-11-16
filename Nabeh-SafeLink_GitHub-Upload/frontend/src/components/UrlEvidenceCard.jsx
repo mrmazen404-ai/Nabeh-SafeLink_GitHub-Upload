@@ -39,6 +39,11 @@ export default function UrlEvidenceCard({ card, lang = 'ar', t }) {
   const sources = card.sources || {};
   const vt = sources.virustotal || {};
   const ml = sources.ml_model || {};
+  const probability = Number(ml.phishing_probability);
+  const hasCalibratedProbability = ml.probability_status === 'CALIBRATED'
+    && Number.isFinite(probability)
+    && probability >= 0
+    && probability <= 1;
   const explanationSource = sources.explanation || {};
   const decisionAudit = decision.audit || {};
   const unknownAudit = decision.unknown || {};
@@ -134,9 +139,24 @@ export default function UrlEvidenceCard({ card, lang = 'ar', t }) {
             <div><dt>{text('Status')}</dt><dd><code>{ml.status || 'UNKNOWN'}</code></dd></div>
             <div><dt>{text('Classification')}</dt><dd><code>{ml.classification || 'UNKNOWN'}</code></dd></div>
             <div><dt>{text('Source')}</dt><dd><code>{ml.source || 'NOT_REPORTED'}</code></dd></div>
+            <div>
+              <dt>{text('PhishingProbability')}</dt>
+              <dd>
+                {hasCalibratedProbability
+                  ? `${(probability * 100).toFixed(1)}%`
+                  : text('ProbabilityUnavailable')}
+              </dd>
+            </div>
+            <div><dt>{text('ProbabilityStatus')}</dt><dd><code>{ml.probability_status || 'UNAVAILABLE'}</code></dd></div>
+            {hasCalibratedProbability && ml.threshold !== null && ml.threshold !== undefined && (
+              <div><dt>{text('ModelThreshold')}</dt><dd>{(Number(ml.threshold) * 100).toFixed(1)}%</dd></div>
+            )}
           </dl>
           <p className="url-evidence-note">
             {lang === 'ar' ? 'هذا مصدر إشارة أمنية؛ لا تعرض البطاقة مساهمات ميزات LightGBM الفعلية.' : 'This is a security signal; this card does not expose actual LightGBM feature contributions.'}
+          </p>
+          <p className="url-evidence-note">
+            {hasCalibratedProbability ? text('CalibratedProbabilityNotice') : text('UncalibratedProbabilityNotice')}
           </p>
           <p className="url-evidence-note">{text('ModelAttribution')}</p>
         </section>

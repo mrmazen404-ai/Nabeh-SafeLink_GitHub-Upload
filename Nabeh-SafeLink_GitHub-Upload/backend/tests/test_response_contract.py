@@ -110,7 +110,10 @@ def test_ml_evidence_keeps_structural_signals_separate_from_measured_facts_and_a
             "raw_classification": "DANGEROUS",
             "source": "ML_MODEL",
             "confidence": 0.91,
-            "phishing_prob": 0.91,
+            "calibrated_phishing_prob": 0.91,
+            "probability_status": "CALIBRATED",
+            "calibration_method": "SIGMOID",
+            "calibration_version": "v1",
             "context_gated": False,
         },
         "evidence_card": {
@@ -123,12 +126,31 @@ def test_ml_evidence_keeps_structural_signals_separate_from_measured_facts_and_a
 
     assert ml["status"] == "COMPLETED"
     assert ml["phishing_probability"] == 0.91
+    assert ml["probability_status"] == "CALIBRATED"
     assert {item["type"] for item in ml["evidence"]} == {"MEASURED_FACT", "EXPLICIT_STRUCTURAL_SIGNAL"}
     assert ml["model_attribution"] == {
         "available": False,
         "reason_code": "MODEL_ATTRIBUTION_NOT_AVAILABLE",
         "message": "Measured URL properties are not proof of individual LightGBM feature contributions.",
     }
+
+
+def test_contract_withholds_raw_probability_when_artifact_is_uncalibrated():
+    result = {
+        "classification": "SUSPICIOUS",
+        "ml_model": {
+            "classification": "SUSPICIOUS",
+            "source": "ML_MODEL",
+            "phishing_prob": 0.91,
+            "probability_status": "UNCALIBRATED",
+        },
+    }
+
+    ml = build_analysis_contract(result)["ml_analysis"]
+
+    assert ml["phishing_probability"] is None
+    assert ml["probability_status"] == "UNCALIBRATED"
+    assert "CALIBRATED_PROBABILITY_UNAVAILABLE" in ml["limitations"]
 
 
 def test_virustotal_success_has_provider_facts_but_not_ml_evidence():

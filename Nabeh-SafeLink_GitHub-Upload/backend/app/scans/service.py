@@ -114,6 +114,9 @@ def _build_url_evidence_card(target_url: str, combined: dict, ml_result: dict, v
         observation_status = "UNAVAILABLE"
 
     vt_status = str(vt_result.get("status", "UNKNOWN")).upper()
+    ml_probability_status = ml_result.get("probability_status") or (
+        "UNCALIBRATED" if "phishing_prob" in ml_result else "UNAVAILABLE"
+    )
     count_keys = ("malicious", "suspicious", "harmless", "undetected", "timeout", "total_engines")
     counts_available = vt_result.get("analysis_stats_available")
     if counts_available is None:
@@ -202,9 +205,20 @@ def _build_url_evidence_card(target_url: str, combined: dict, ml_result: dict, v
         },
         "sources": {
             "ml_model": {
-                "status": "COMPLETED" if ml_result.get("source") == "ML_MODEL" else ml_result.get("source", "UNAVAILABLE_OR_NOT_RUN"),
+                "status": "COMPLETED" if ml_result.get("source") in {"ML_MODEL", "ML_MODEL_CALIBRATED"} else ml_result.get("source", "UNAVAILABLE_OR_NOT_RUN"),
                 "classification": str(ml_result.get("classification", "UNKNOWN")).upper(),
                 "source": ml_result.get("source", "NOT_REPORTED"),
+                # Never expose the raw LightGBM score as a probability. The
+                # field is populated only by a verified calibration artifact.
+                "phishing_probability": (
+                    ml_result.get("calibrated_phishing_prob")
+                    if ml_probability_status == "CALIBRATED"
+                    else None
+                ),
+                "probability_status": ml_probability_status,
+                "calibration_method": ml_result.get("calibration_method"),
+                "calibration_version": ml_result.get("calibration_version"),
+                "threshold": ml_result.get("threshold"),
                 "strong_signals": _get_ml_strong_signals(ml_result),
                 "feature_attribution": "NOT_AVAILABLE",
                 "role": "SECURITY_SIGNAL_NOT_MODEL_ATTRIBUTION",

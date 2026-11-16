@@ -45,6 +45,10 @@ def _ml_analysis(data: dict[str, Any], evidence_card: dict[str, Any]) -> dict[st
         strong_signals = []
     raw_classification = model.get("raw_classification", stage.get("raw_classification"))
     context_gated = model.get("context_gated", stage.get("context_gated"))
+    probability_status = _upper(model.get("probability_status", stage.get("probability_status", "UNAVAILABLE")))
+    calibrated_probability = model.get("calibrated_phishing_prob", model.get("phishing_probability"))
+    if probability_status != "CALIBRATED":
+        calibrated_probability = None
     reason_codes = []
     if source == "ML_MODEL":
         reason_codes.append("ML_MODEL_EXECUTED")
@@ -74,7 +78,10 @@ def _ml_analysis(data: dict[str, Any], evidence_card: dict[str, Any]) -> dict[st
         "raw_classification": raw_classification,
         "context_gated": context_gated,
         "confidence": model.get("confidence", stage.get("confidence")),
-        "phishing_probability": model.get("phishing_prob", stage.get("phishing_prob")),
+        "phishing_probability": calibrated_probability,
+        "probability_status": probability_status,
+        "calibration_method": model.get("calibration_method", stage.get("calibration_method")),
+        "calibration_version": model.get("calibration_version", stage.get("calibration_version")),
         "observed_facts": observed_facts,
         "strong_signals": deepcopy(strong_signals),
         "reason_codes": reason_codes,
@@ -85,9 +92,12 @@ def _ml_analysis(data: dict[str, Any], evidence_card: dict[str, Any]) -> dict[st
         },
         "evidence": measured_fact_evidence + signal_evidence,
         "limitations": [
-            "MODEL_ATTRIBUTION_NOT_AVAILABLE",
-            "RAW_MODEL_PROBABILITY_NOT_EXPOSED_OR_CALIBRATED",
-            "MODEL_CLASSIFICATION_IS_NOT_PROOF_OF_MALWARE",
+            item for item in [
+                "MODEL_ATTRIBUTION_NOT_AVAILABLE",
+                "RAW_MODEL_PROBABILITY_NOT_EXPOSED",
+                "CALIBRATED_PROBABILITY_UNAVAILABLE" if probability_status != "CALIBRATED" else None,
+                "MODEL_CLASSIFICATION_IS_NOT_PROOF_OF_MALWARE",
+            ] if item
         ],
     }
 

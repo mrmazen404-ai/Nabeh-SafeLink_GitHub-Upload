@@ -161,9 +161,37 @@ def test_evidence_card_uses_same_fusion_rule_and_withholds_model_probability():
     assert card["decision"]["audit"]["audit_status"] == "EXACT_RULE_MAPPED"
     assert card["decision"]["thresholds"]["dangerous_min_malicious_engines"] == 3
     assert card["decision"]["thresholds"]["suspicious_min_vt_suspicious_engines"] == 2
-    assert "phishing_prob" not in str(card)
-    assert "0.1" not in str(card)
+    assert card["sources"]["ml_model"]["phishing_probability"] is None
+    assert card["sources"]["ml_model"]["probability_status"] == "UNCALIBRATED"
+    assert "raw_phishing_prob" not in str(card)
     assert json.loads(json.dumps(card))["schema_version"] == "1.0"
+
+
+def test_evidence_card_exposes_only_verified_calibrated_probability():
+    ml = {
+        "classification": "SUSPICIOUS",
+        "source": "ML_MODEL",
+        "phishing_prob": 0.91,
+        "calibrated_phishing_prob": 0.734216,
+        "probability_status": "CALIBRATED",
+        "calibration_method": "SIGMOID",
+        "calibration_version": "v1",
+        "threshold": 0.45,
+    }
+    card = _build_url_evidence_card(
+        "https://example.com/login",
+        {"classification": "SUSPICIOUS", "decision_code": "ML_SUSPICIOUS_SIGNAL"},
+        ml,
+        {"status": "UNKNOWN", "provider_status": "NOT_CONFIGURED"},
+        {"provider": "LOCAL_RULES"},
+    )
+
+    model = card["sources"]["ml_model"]
+    assert model["phishing_probability"] == 0.734216
+    assert model["probability_status"] == "CALIBRATED"
+    assert model["calibration_method"] == "SIGMOID"
+    assert model["threshold"] == 0.45
+    assert "0.91" not in json.dumps(card)
 
 
 @pytest.mark.parametrize(
