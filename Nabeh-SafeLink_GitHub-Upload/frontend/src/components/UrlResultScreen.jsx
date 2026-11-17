@@ -21,6 +21,7 @@ import '../styles/result.css';
 export default function UrlResultScreen({ result, onReset, activeTab, setActiveTab, isGuest = true, onNavigateAuth }) {
   const { t, dir, lang } = useLanguage();
   const [copied, setCopied] = useState(false);
+  const [copyError, setCopyError] = useState(false);
   const classification = result?.classification || 'UNKNOWN';
 
   const CONFIG = {
@@ -112,13 +113,17 @@ export default function UrlResultScreen({ result, onReset, activeTab, setActiveT
   const harmlessPct = totalEngines > 0 ? ((vt.harmless || 0) / totalEngines) * 100 : 0;
   const undetectedPct = totalEngines > 0 ? (vtUndetectedCount / totalEngines) * 100 : 0;
   const timeoutPct = totalEngines > 0 ? (vtTimeoutCount / totalEngines) * 100 : 0;
+  const respondingSources = [hasMlSource, totalEngines > 0, usesGemini].filter(Boolean).length;
 
   const handleCopyReport = () => {
-    if (isGuest || !navigator.clipboard?.writeText) return;
+    if (isGuest) return;
+    if (!navigator.clipboard?.writeText) { setCopyError(true); return; }
     const reportText = `Nabeh SafeLink URL Audit Report:\nURL: ${targetUrl}\nClassification: ${config.title}\nRecommendation: ${exp.recommendation || t('result.defaultRec')}`;
-    navigator.clipboard.writeText(reportText);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2500);
+    setCopyError(false);
+    navigator.clipboard.writeText(reportText).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2500);
+    }).catch(() => setCopyError(true));
   };
 
   const sourceLabel = (() => {
@@ -180,6 +185,15 @@ export default function UrlResultScreen({ result, onReset, activeTab, setActiveT
 
             <h2 className="result-title">{config.title}</h2>
             <p className="result-desc">{config.description}</p>
+            <section className={`result-summary-card result-summary-${config.className}`} aria-labelledby="url-result-summary-title">
+              <div className="result-summary-heading"><h3 id="url-result-summary-title">{t('result.summaryTitle')}</h3><span className="result-summary-coverage">{confidence !== null ? `${t('result.confidenceLabel')}: ${confidence}%` : t('result.uncalibratedNoPercentage')}</span></div>
+              <p className="result-summary-action"><strong>{t('result.summaryActionTitle')}:</strong> {exp.recommendation || config.description}</p>
+              <div className="result-summary-metrics">
+                <div className="result-summary-metric"><span>{t('result.summarySources')}</span><strong>{respondingSources}</strong></div>
+                <div className="result-summary-metric"><span>{t('result.summaryEngines')}</span><strong>{totalEngines || '—'}</strong></div>
+                <div className="result-summary-metric"><span>{t('result.coverageFull')}</span><strong>{totalEngines > 0 || hasMlSource ? '✓' : '—'}</strong></div>
+              </div>
+            </section>
 
             {/* Confidence Bar */}
             {confidence !== null && (
@@ -293,11 +307,11 @@ export default function UrlResultScreen({ result, onReset, activeTab, setActiveT
                     <span className="detail-value" style={{ color: 'var(--color-success)' }}>{vtHarmlessCount}</span>
                   </div>
                   <div className="detail-item">
-                    <span className="detail-label">{lang === 'ar' ? 'غير مكتشف' : 'Undetected'}</span>
+                    <span className="detail-label">{t('result.vtUndetected')}</span>
                     <span className="detail-value">{vtUndetectedCount}</span>
                   </div>
                   <div className="detail-item">
-                    <span className="detail-label">{lang === 'ar' ? 'انتهت المهلة' : 'Timeout'}</span>
+                    <span className="detail-label">{t('result.vtTimeout')}</span>
                     <span className="detail-value">{vtTimeoutCount}</span>
                   </div>
                   <div className="detail-item">
@@ -368,6 +382,7 @@ export default function UrlResultScreen({ result, onReset, activeTab, setActiveT
                   <span>{copied ? t('result.copiedReportBtn') : t('result.copyReportBtn')}</span>
                 </button>
               )}
+              {copyError && <span className="result-copy-error" role="alert">{t('result.copyFailed')}</span>}
             </div>
           </aside>
         </div>

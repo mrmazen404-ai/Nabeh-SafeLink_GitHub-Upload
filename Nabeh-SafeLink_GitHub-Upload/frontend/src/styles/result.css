@@ -128,6 +128,22 @@
   margin-bottom: var(--space-6);
 }
 
+.result-summary-card { display: grid; gap: 12px; padding: 16px; margin-block: 4px 18px; border: 1px solid var(--color-border); border-inline-start: 4px solid var(--color-secondary); border-radius: 16px; background: var(--color-bg-subtle); }
+.result-summary-card.result-summary-safe { border-inline-start-color: var(--color-success); }
+.result-summary-card.result-summary-suspicious { border-inline-start-color: var(--color-warning); }
+.result-summary-card.result-summary-dangerous { border-inline-start-color: var(--color-danger); }
+.result-summary-card.result-summary-unknown { border-inline-start-color: var(--color-text-muted); }
+.result-summary-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.result-summary-heading h3 { margin: 0; color: var(--color-primary); font-size: 1rem; }
+.result-summary-action { color: var(--color-text-primary); line-height: 1.6; }
+.result-summary-metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 8px; }
+.result-summary-metric { padding: 9px 10px; border: 1px solid var(--color-border); border-radius: 10px; background: var(--color-bg); }
+.result-summary-metric span { display: block; color: var(--color-text-subtle); font-size: .76rem; }
+.result-summary-metric strong { display: block; margin-top: 2px; color: var(--color-primary); font-size: 1rem; }
+.result-summary-coverage { color: var(--color-text-subtle); font-size: .82rem; }
+.result-copy-error { color: var(--color-danger); font-size: .8rem; }
+.sms-reference-note { display: inline-flex; align-items: center; max-width: 100%; padding: 7px 9px; border: 1px dashed var(--color-border); border-radius: 8px; background: var(--color-bg-subtle); }
+
 /* Confidence Bar */
 .confidence-block {
   margin-bottom: var(--space-6);
@@ -464,7 +480,8 @@
   .result-main-card > .result-trust-strip,
   .result-main-card > .confidence-block,
   .result-main-card > .explanation-block,
-  .result-main-card > .url-evidence-disclosure {
+  .result-main-card > .url-evidence-disclosure,
+  .result-main-card > .result-summary-card {
     grid-column: 1 / -1;
   }
 

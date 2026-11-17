@@ -189,7 +189,7 @@ export default function UrlEvidenceCard({ card, lang = 'ar', t }) {
                   <thead><tr><th scope="col">{text('Engine')}</th><th scope="col">{text('Category')}</th><th scope="col">{text('Method')}</th><th scope="col">{text('RawResult')}</th></tr></thead>
                   <tbody>{scanners.map((item, index) => (
                     <tr key={`${item.engine_name || 'engine'}-${index}`}>
-                      <td>{item.engine_name || '—'}</td><td><EvidenceCode value={item.category || 'unknown'} lang={lang} /></td><td>{item.method || '—'}</td><td>{item.result || '—'}</td>
+                      <td data-label={text('Engine')}>{item.engine_name || '—'}</td><td data-label={text('Category')}><EvidenceCode value={item.category || 'unknown'} lang={lang} /></td><td data-label={text('Method')}>{item.method || '—'}</td><td data-label={text('RawResult')}>{item.result || '—'}</td>
                     </tr>
                   ))}</tbody>
                 </table>

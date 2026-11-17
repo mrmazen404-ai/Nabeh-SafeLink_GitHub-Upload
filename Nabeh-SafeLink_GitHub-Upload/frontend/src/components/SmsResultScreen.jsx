@@ -21,6 +21,7 @@ import '../styles/result.css';
 export default function SmsResultScreen({ result, onReset, activeTab, setActiveTab, isGuest = true, onNavigateAuth }) {
   const { t, dir, lang } = useLanguage();
   const [copied, setCopied] = useState(false);
+  const [copyError, setCopyError] = useState(false);
   const classification = result?.classification || 'UNKNOWN';
 
   const CONFIG = {
@@ -136,13 +137,17 @@ export default function SmsResultScreen({ result, onReset, activeTab, setActiveT
   const smsCoverage = smsEvidenceCard.coverage || {};
   const smsObservations = smsEvidenceCard.message_observations || {};
   const geminiSearchStatus = smsSources.gemini?.search_status || exp.search_status || 'NOT_REPORTED';
+  const coverageLabel = analysisCoverage === 'PARTIAL' ? t('result.coveragePartial') : t('result.coverageFull');
 
   const handleCopyReport = () => {
-    if (isGuest || !navigator.clipboard?.writeText) return;
+    if (isGuest) return;
+    if (!navigator.clipboard?.writeText) { setCopyError(true); return; }
     const reportText = `Nabeh SafeLink SMS Security Analysis Report:\nMessage: ${messageText}\nClassification: ${config.title}\nFraud Risk: Not reported (no calibrated SMS score)\nClaimed Sender: ${exp.claimed_sender || 'N/A'}\nReference Domain (does not verify sender): ${exp.official_domain || 'N/A'}\nPortal (not independently verified): ${officialPortal || 'N/A'}\nRecommendation: ${exp.recommendation || 'تحقق من المصدر الرسمي للرسالة.'}`;
-    navigator.clipboard.writeText(reportText);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2500);
+    setCopyError(false);
+    navigator.clipboard.writeText(reportText).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2500);
+    }).catch(() => setCopyError(true));
   };
 
   return (
@@ -280,6 +285,15 @@ export default function SmsResultScreen({ result, onReset, activeTab, setActiveT
 
             <h2 className="result-title">{config.title}</h2>
             <p className="result-desc">{config.description}</p>
+            <section className={`result-summary-card result-summary-${config.className}`} aria-labelledby="sms-result-summary-title">
+              <div className="result-summary-heading"><h3 id="sms-result-summary-title">{t('result.summaryTitle')}</h3><span className="result-summary-coverage">{coverageLabel}</span></div>
+              <p className="result-summary-action"><strong>{t('result.summaryActionTitle')}:</strong> {exp.recommendation || config.description}</p>
+              <div className="result-summary-metrics">
+                <div className="result-summary-metric"><span>{t('result.summaryDetectedLinks')}</span><strong>{extractedUrls.length}</strong></div>
+                <div className="result-summary-metric"><span>{t('result.summaryScannedLinks')}</span><strong>{linksScannedCount}</strong></div>
+                <div className="result-summary-metric"><span>{t('result.summaryUnscannedLinks')}</span><strong>{linksNotScannedCount}</strong></div>
+              </div>
+            </section>
 
               {/* OFFICIAL PORTAL & STEP-BY-STEP ACTION PLAN */}
               <div className="sms-action-plan" style={{ marginTop: '24px', padding: '20px', borderRadius: '14px', background: 'var(--color-secondary-subtle)', border: '1px solid var(--color-secondary)', boxShadow: '0 4px 12px rgba(30,94,255,0.06)' }}>
@@ -297,15 +311,18 @@ export default function SmsResultScreen({ result, onReset, activeTab, setActiveT
                       target="_blank"
                       rel="noopener noreferrer"
                       className="btn btn-primary"
+                      onClick={(event) => {
+                        if (!window.confirm(t('result.confirmCuratedDomain'))) event.preventDefault();
+                      }}
                       style={{ padding: '8px 16px', fontSize: '0.85rem', textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: '6px' }}
                     >
                       <LinkIcon size={14} color="#FFFFFF" />
-                      <span>{lang === 'ar' ? 'فتح النطاق المرجعي الموثق' : 'Open curated reference domain'}</span>
+                      <span>{t('result.openCuratedDomain')}</span>
                     </a>
                   )}
                   {hasReferencePortal && officialPortal && !portalHref && (
                     <span className="sms-reference-note" role="note" style={{ fontSize: '0.8rem', color: 'var(--color-text-subtle)' }}>
-                      {lang === 'ar' ? 'هذا مرجع غير قابل للنقر؛ لا يثبت هوية المرسل.' : 'This is a non-clickable reference; it does not verify the sender.'}
+                      {t('result.nonClickableReference')}
                     </span>
                   )}
                 </div>
@@ -601,6 +618,7 @@ export default function SmsResultScreen({ result, onReset, activeTab, setActiveT
                   <span>{copied ? t('result.copiedReportBtn') : t('result.copyReportBtn')}</span>
                 </button>
               )}
+              {copyError && <span className="result-copy-error" role="alert">{t('result.copyFailed')}</span>}
             </div>
           </aside>
         </div>
