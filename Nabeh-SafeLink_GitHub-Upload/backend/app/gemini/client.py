@@ -448,7 +448,10 @@ Do not return probability, confidence, or numeric risk scores.
                 parsed["fallback_reason"] = None
                 parsed["input_truncated"] = input_truncated
                 parsed["citations"] = _extract_grounding_citations(response)
-                parsed = _sanitize_official_portal_url(parsed, text_content, extracted_url, language)
+                parsed["search_attempted"] = True
+                parsed["search_status"] = "SUCCESS" if parsed["citations"] else "NO_RESULTS"
+                parsed["source_quality"] = "SEARCH_GROUNDING" if parsed["citations"] else "UNKNOWN"
+                parsed = _sanitize_official_portal_url(parsed, text_content, extracted_url, language, allow_reference=True)
                 log_event(logger, logging.INFO, "gemini_sms_analysis_succeeded", operation_id=operation_id, model=model_name, mode="search")
                 _set_provider_status("ready", "GEMINI_SEARCH")
                 return parsed
@@ -488,7 +491,10 @@ Do not return probability, confidence, or numeric risk scores.
                 parsed["fallback_reason"] = None
                 parsed["input_truncated"] = input_truncated
                 parsed["citations"] = _extract_grounding_citations(response)
-                parsed = _sanitize_official_portal_url(parsed, text_content, extracted_url, language)
+                parsed["search_attempted"] = False
+                parsed["search_status"] = "NOT_USED"
+                parsed["source_quality"] = "MODEL_ONLY"
+                parsed = _sanitize_official_portal_url(parsed, text_content, extracted_url, language, allow_reference=True)
                 log_event(logger, logging.INFO, "gemini_sms_analysis_succeeded", operation_id=operation_id, model=model_name, mode="json")
                 _set_provider_status("ready", "GEMINI")
                 return parsed
@@ -506,9 +512,12 @@ Do not return probability, confidence, or numeric risk scores.
     local_fallback["provider_status"] = "FALLBACK"
     local_fallback["fallback_reason"] = last_failure_reason
     local_fallback["input_truncated"] = input_truncated
+    local_fallback["search_attempted"] = False
+    local_fallback["search_status"] = "NOT_CONFIGURED" if last_failure_reason == "GEMINI_API_KEY_MISSING" else "FAILED"
+    local_fallback["source_quality"] = "UNKNOWN"
     if last_failure_reason not in {"GEMINI_API_KEY_MISSING", "CLIENT_UNAVAILABLE"}:
         _set_provider_status("fallback", "LOCAL_AI_RULES")
-    return _sanitize_official_portal_url(local_fallback, text_content, extracted_url, language)
+    return _sanitize_official_portal_url(local_fallback, text_content, extracted_url, language, allow_reference=True)
 
 
 async def analyze_sms_message(
@@ -527,7 +536,10 @@ async def analyze_sms_message(
             "fallback_reason": "GEMINI_CAPACITY_LIMITED",
             "input_truncated": len(text_content or "") > 600 or len(extracted_url or "") > 2048,
         })
-        return _sanitize_official_portal_url(fallback, text_content, extracted_url, language)
+        fallback["search_attempted"] = False
+        fallback["search_status"] = "CAPACITY_LIMITED"
+        fallback["source_quality"] = "UNKNOWN"
+        return _sanitize_official_portal_url(fallback, text_content, extracted_url, language, allow_reference=True)
     try:
         return await _analyze_sms_message_unlimited(
             text_content=text_content,
@@ -558,16 +570,23 @@ def _sanitize_official_portal_url(
     text_content: str,
     extracted_url: str,
     language: str = "ar",
+    allow_reference: bool = False,
 ) -> dict:
     if not isinstance(parsed, dict):
         return parsed
 
-    # A brand mention or URL resemblance cannot authenticate the sender.
-    # This client has no independent verification evidence contract.
+    domain_verification = _verify_reference_domain(text_content, extracted_url, language)
     parsed["official_portal_url"] = "غير متاح"
     parsed["official_domain"] = "غير متاح"
+    parsed["portal_source"] = None
     parsed["authenticity_status"] = "غير متحقق" if language == "ar" else "Unverified"
-    parsed["domain_verification"] = _verify_reference_domain(text_content, extracted_url, language)
+    parsed["domain_verification"] = domain_verification
+    parsed["claimed_entity"] = domain_verification.get("claimed_entity")
+    parsed["claim_status"] = domain_verification.get("claim_status", "UNKNOWN")
+    if allow_reference and domain_verification.get("reference_domain"):
+        parsed["official_domain"] = domain_verification["reference_domain"]
+        parsed["official_portal_url"] = domain_verification["reference_portal_url"]
+        parsed["portal_source"] = "CURATED_ALLOWLIST_REFERENCE"
 
     return parsed
 
@@ -585,17 +604,28 @@ def _verify_reference_domain(text_content: str, extracted_url: str, language: st
         host = (urlsplit(raw).hostname or "").lower().rstrip(".") or None
     except ValueError:
         host = None
+    claimed_domain = _matched_known_brand_domain(text_content, extracted_url)
+    claimed_entity = None
+    for _, (name_ar, name_en, official_domain) in KNOWN_BRANDS.items():
+        if claimed_domain == official_domain.lower().rstrip("."):
+            claimed_entity = name_ar or name_en
+            break
     if not host:
-        return {"status": "NO_URL", "observed_host": None, "reference_domain": None, "source": "CURATED_ALLOWLIST"}
+        return {"status": "NO_URL", "observed_host": None, "reference_domain": claimed_domain, "reference_portal_url": f"https://{claimed_domain}" if claimed_domain else None, "claimed_entity": claimed_entity, "claim_status": "EXPLICIT" if claimed_domain else "UNKNOWN", "source": "CURATED_ALLOWLIST", "sender_identity_verified": False, "impersonation_signals": []}
     matched = None
     for _, (_, _, official_domain) in KNOWN_BRANDS.items():
         domain = official_domain.lower().rstrip(".")
         if host == domain or host.endswith("." + domain):
             matched = domain
             break
-    if matched:
-        return {"status": "MATCHED_CURATED_ALLOWLIST", "observed_host": host, "reference_domain": matched, "source": "CURATED_ALLOWLIST", "sender_identity_verified": False}
-    return {"status": "MISMATCH_OR_UNKNOWN", "observed_host": host, "reference_domain": None, "source": "CURATED_ALLOWLIST", "sender_identity_verified": False}
+    reference_domain = claimed_domain or matched
+    signals = []
+    if reference_domain and host != reference_domain and not host.endswith("." + reference_domain):
+        signals.append("CLAIMED_BRAND_DOMAIN_MISMATCH")
+    if host.startswith("xn--") or ".xn--" in host:
+        signals.append("PUNYCODE_HOST")
+    status = "MATCHED_CURATED_ALLOWLIST" if matched else "MISMATCH_OR_UNKNOWN"
+    return {"status": status, "observed_host": host, "reference_domain": reference_domain, "reference_portal_url": f"https://{reference_domain}" if reference_domain else None, "claimed_entity": claimed_entity, "claim_status": "EXPLICIT" if claimed_domain else "UNKNOWN", "source": "CURATED_ALLOWLIST", "sender_identity_verified": False, "impersonation_signals": signals}
 
 
 def _local_sms_analysis(text_content: str, extracted_url: str = "", language: str = "ar", evidence: dict | None = None) -> dict:

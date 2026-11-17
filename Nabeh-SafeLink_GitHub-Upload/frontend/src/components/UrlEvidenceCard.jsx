@@ -35,6 +35,7 @@ export default function UrlEvidenceCard({ card, lang = 'ar', t }) {
   const decision = card.decision || {};
   const decisionInputs = decision.inputs || {};
   const decisionCounts = decisionInputs.virustotal_counts || {};
+  const mlSignals = Array.isArray(decisionInputs.ml_strong_signals) ? decisionInputs.ml_strong_signals : [];
   const thresholds = decision.thresholds || {};
   const sources = card.sources || {};
   const vt = sources.virustotal || {};
@@ -104,6 +105,7 @@ export default function UrlEvidenceCard({ card, lang = 'ar', t }) {
             <div><dt>{text('Suspicious')}</dt><dd>{decisionCounts.suspicious ?? '—'}</dd></div>
             <div><dt>{text('ModelClass')}</dt><dd><code>{decisionInputs.ml_classification || 'UNKNOWN'}</code></dd></div>
             <div><dt>{text('ModelSource')}</dt><dd><code>{decisionInputs.ml_source || 'NOT_REPORTED'}</code></dd></div>
+            <div><dt>{lang === 'ar' ? 'إشارات ML الصريحة' : 'Explicit ML signals'}</dt><dd><code>{mlSignals.length ? mlSignals.join(lang === 'ar' ? '، ' : ', ') : 'NONE_REPORTED'}</code></dd></div>
           </dl>
         </div>
         <div className="url-evidence-meta">
@@ -172,6 +174,7 @@ export default function UrlEvidenceCard({ card, lang = 'ar', t }) {
             {unavailableCounts && <div><dt>{text('EngineCounts')}</dt><dd>{text('NotAvailable')}</dd></div>}
             {formatTimestamp(vt.last_analysis_date, lang) && <div><dt>{text('ProviderTime')}</dt><dd>{formatTimestamp(vt.last_analysis_date, lang)} UTC</dd></div>}
             {formatTimestamp(vt.evidence_timestamp, lang) && <div><dt>{text('ReportTime')}</dt><dd>{formatTimestamp(vt.evidence_timestamp, lang)} UTC</dd></div>}
+            {(vt.freshness_reason || vt.analysis_freshness_reason) && <div><dt>{lang === 'ar' ? 'سبب حداثة التقرير' : 'Freshness reason'}</dt><dd>{vt.freshness_reason || vt.analysis_freshness_reason}</dd></div>}
             {vt.error && <div><dt>{text('ErrorCode')}</dt><dd><code>{String(vt.error).slice(0, 100)}</code></dd></div>}
             <div><dt>{lang === 'ar' ? 'دور المصدر' : 'Source role'}</dt><dd><code>{vt.role || 'PROVIDER_FACTS_ONLY'}</code></dd></div>
           </dl>

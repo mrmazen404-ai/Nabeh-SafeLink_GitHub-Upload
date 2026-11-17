@@ -158,6 +158,9 @@ def _gemini_analysis(data: dict[str, Any]) -> dict[str, Any]:
     fallback_reason = explanation.get("fallback_reason", stage.get("fallback_reason"))
     citations = deepcopy(explanation.get("citations", stage.get("citations", [])))
     domain_verification = deepcopy(explanation.get("domain_verification", stage.get("domain_verification")))
+    search_attempted = bool(explanation.get("search_attempted", stage.get("search_attempted", False)))
+    search_status = _upper(explanation.get("search_status", stage.get("search_status", "NOT_REPORTED")))
+    source_quality = _upper(explanation.get("source_quality", stage.get("source_quality", "UNKNOWN")))
     reason_codes = []
     if provider_status == "SUCCESS" and str(provider).upper().startswith("GEMINI"):
         reason_codes.append("GEMINI_PROVIDER_RESPONSE")
@@ -178,6 +181,12 @@ def _gemini_analysis(data: dict[str, Any]) -> dict[str, Any]:
         "fallback_reason": fallback_reason,
         "input_truncated": bool(explanation.get("input_truncated", stage.get("input_truncated", False))),
         "domain_verification": domain_verification or {"status": "NOT_REPORTED"},
+        "claimed_entity": explanation.get("claimed_entity", stage.get("claimed_entity")),
+        "claim_status": _upper(explanation.get("claim_status", stage.get("claim_status", "UNKNOWN"))),
+        "portal_source": explanation.get("portal_source", stage.get("portal_source")),
+        "search_attempted": search_attempted,
+        "search_status": search_status,
+        "source_quality": source_quality,
         "citations": citations,
         "reason_codes": reason_codes,
         "role": "SUPPORTING_EXPLANATION_NOT_DECISION_SOURCE",
@@ -185,6 +194,7 @@ def _gemini_analysis(data: dict[str, Any]) -> dict[str, Any]:
         "limitations": [
             "AI_EXPLANATION_IS_NOT_INDEPENDENT_MALWARE_PROOF",
             "GEMINI_CITATIONS_DO_NOT_PROVE_SENDER_IDENTITY",
+            "OFFICIAL_PORTAL_IS_REFERENCE_ONLY_NOT_SENDER_AUTHENTICATION",
         ],
     }
 

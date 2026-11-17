@@ -953,7 +953,7 @@ class ScanService:
 
         # Apply the same independent, curated-domain check to Gemini and local fallbacks.
         ai_analysis = _sanitize_official_portal_url(
-            ai_analysis, text_content, selected_url or extracted_url, language
+            ai_analysis, text_content, selected_url or extracted_url, language, allow_reference=True
         )
         local_text = cls.analyze_text_phishing(text_content, bool(extracted_url))
         ai_class = str(ai_analysis.get("classification", "UNKNOWN")).upper()
@@ -1009,6 +1009,12 @@ class ScanService:
             "authenticity_status": ai_analysis.get("authenticity_status", "غير متحقق" if language == "ar" else "Unverified"),
             "citations": ai_analysis.get("citations", []),
             "domain_verification": ai_analysis.get("domain_verification", {"status": "NOT_REPORTED", "source": "CURATED_ALLOWLIST"}),
+            "claimed_entity": ai_analysis.get("claimed_entity"),
+            "claim_status": ai_analysis.get("claim_status", "UNKNOWN"),
+            "portal_source": ai_analysis.get("portal_source"),
+            "search_attempted": bool(ai_analysis.get("search_attempted", False)),
+            "search_status": ai_analysis.get("search_status", "NOT_REPORTED"),
+            "source_quality": ai_analysis.get("source_quality", "UNKNOWN"),
             "limitations": ai_analysis.get("limitations", []),
             "fraud_probability": fraud_prob,
             "calibration_status": "NOT_CALIBRATED",
@@ -1023,6 +1029,11 @@ class ScanService:
             "decision": {
                 "classification": str(classification).upper(),
                 "source": ai_analysis.get("provider", "LOCAL_RULES"),
+                "decision_code": "SMS_CONSERVATIVE_TRIAGE",
+                "decision_reasons": [
+                    "AI_EXPLANATION_SUPPORTING_ONLY",
+                    "SMS_SENDER_IDENTITY_NOT_VERIFIED",
+                ],
                 "decision_role": "CONSERVATIVE_SMS_TRIAGE_NOT_AUTHENTICITY_PROOF",
             },
             "coverage": {
@@ -1051,9 +1062,9 @@ class ScanService:
                 for item in embedded_url_analyses
             ],
             "sources": {
-                "ml_model": {"status": ml_result.get("source", "NOT_RUN"), "classification": ml_result.get("classification", "UNKNOWN")},
-                "virustotal": {"status": vt_result.get("provider_status", vt_result.get("status", "NOT_RUN")), "classification": vt_result.get("status", "UNKNOWN")},
-                "gemini": {"provider": ai_analysis.get("provider", "NOT_RUN"), "status": ai_analysis.get("provider_status", "NOT_REPORTED"), "citations": ai_analysis.get("citations", [])},
+                "ml_model": {"status": ml_result.get("source", "NOT_RUN"), "classification": ml_result.get("classification", "UNKNOWN"), "role": "URL_LINK_SIGNAL_ONLY"},
+                "virustotal": {"status": vt_result.get("provider_status", vt_result.get("status", "NOT_RUN")), "classification": vt_result.get("status", "UNKNOWN"), "malicious": vt_result.get("malicious", 0), "suspicious": vt_result.get("suspicious", 0), "total_engines": vt_result.get("total_engines", 0), "freshness_reason": vt_result.get("analysis_freshness_reason", vt_result.get("freshness_reason")), "role": "PROVIDER_FACTS_ONLY"},
+                "gemini": {"provider": ai_analysis.get("provider", "NOT_RUN"), "status": ai_analysis.get("provider_status", "NOT_REPORTED"), "fallback_reason": ai_analysis.get("fallback_reason"), "input_truncated": input_truncated, "search_attempted": bool(ai_analysis.get("search_attempted", False)), "search_status": ai_analysis.get("search_status", "NOT_REPORTED"), "source_quality": ai_analysis.get("source_quality", "UNKNOWN"), "citations": ai_analysis.get("citations", []), "role": "SUPPORTING_EXPLANATION_NOT_DECISION_SOURCE"},
                 "domain_verification": ai_analysis.get("domain_verification", {"status": "NOT_REPORTED", "source": "CURATED_ALLOWLIST"}),
                 "calibration_status": "NOT_CALIBRATED",
             },
@@ -1153,10 +1164,17 @@ class ScanService:
                     "fallback_reason": ai_analysis.get("fallback_reason"),
                     "classification": ai_analysis.get("classification", "UNKNOWN"),
                     "summary": ai_analysis.get("summary", ""),
-                    "recommendation": ai_analysis.get("recommendation", ""),
-                    "citations": ai_analysis.get("citations", []),
-                    "domain_verification": ai_analysis.get("domain_verification", {"status": "NOT_REPORTED", "source": "CURATED_ALLOWLIST"}),
-                },
+                "recommendation": ai_analysis.get("recommendation", ""),
+                "citations": ai_analysis.get("citations", []),
+                "domain_verification": ai_analysis.get("domain_verification", {"status": "NOT_REPORTED", "source": "CURATED_ALLOWLIST"}),
+                "claimed_entity": ai_analysis.get("claimed_entity"),
+                "claim_status": ai_analysis.get("claim_status", "UNKNOWN"),
+                "official_portal_url": ai_analysis.get("official_portal_url", "غير متاح"),
+                "portal_source": ai_analysis.get("portal_source"),
+                "search_attempted": bool(ai_analysis.get("search_attempted", False)),
+                "search_status": ai_analysis.get("search_status", "NOT_REPORTED"),
+                "source_quality": ai_analysis.get("source_quality", "UNKNOWN"),
+            },
             },
             "explanation": explanation,
             "evidence_card": sms_evidence_card,

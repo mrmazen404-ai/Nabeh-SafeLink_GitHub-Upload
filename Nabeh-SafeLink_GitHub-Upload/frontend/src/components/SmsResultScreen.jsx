@@ -122,6 +122,7 @@ export default function SmsResultScreen({ result, onReset, activeTab, setActiveT
   const rawPortal = exp?.official_portal_url;
   const officialPortal = rawPortal && !isInvalidOrGenericPortal(rawPortal) ? rawPortal : null;
   const hasCuratedPortal = exp?.portal_source === 'CURATED_ALLOWLIST';
+  const hasReferencePortal = exp?.portal_source === 'CURATED_ALLOWLIST_REFERENCE';
   const portalHref = hasCuratedPortal && officialPortal
     ? (String(officialPortal).startsWith('http') ? officialPortal : `https://${officialPortal}`)
     : null;
@@ -129,6 +130,11 @@ export default function SmsResultScreen({ result, onReset, activeTab, setActiveT
   const citations = Array.isArray(exp?.citations) ? exp.citations : (Array.isArray(result?.citations) ? result.citations : []);
   const domainVerification = exp?.domain_verification || result?.domain_verification || {};
   const smsEvidenceCard = result?.evidence_card || {};
+  const smsSources = smsEvidenceCard.sources || {};
+  const smsDecision = smsEvidenceCard.decision || {};
+  const smsCoverage = smsEvidenceCard.coverage || {};
+  const smsObservations = smsEvidenceCard.message_observations || {};
+  const geminiSearchStatus = smsSources.gemini?.search_status || exp.search_status || 'NOT_REPORTED';
 
   const handleCopyReport = () => {
     if (isGuest || !navigator.clipboard?.writeText) return;
@@ -326,6 +332,12 @@ export default function SmsResultScreen({ result, onReset, activeTab, setActiveT
                   </ul>
                 </details>
               )}
+              <div style={{ marginTop: '12px', padding: '10px 12px', borderRadius: '8px', background: 'var(--color-bg-subtle)', border: '1px solid var(--color-border-subtle)', fontSize: '0.84rem' }}>
+                <strong>{lang === 'ar' ? 'حالة البحث والتحقق: ' : 'Search and verification status: '}</strong>
+                <code>{geminiSearchStatus}</code>
+                {exp.claimed_entity && <span> — {lang === 'ar' ? 'الجهة المدعاة: ' : 'Claimed entity: '}{exp.claimed_entity}</span>}
+                <div className="muted" style={{ marginTop: '4px' }}>{lang === 'ar' ? 'المصادر تساعد في التحقق ولا تثبت هوية مرسل الرسالة.' : 'Sources support verification but do not prove the SMS sender identity.'}</div>
+              </div>
               {geminiClassification && (
                 <div className="explanation-text" style={{ marginTop: '10px', fontWeight: 600 }}>
                   {usesGemini
@@ -373,6 +385,25 @@ export default function SmsResultScreen({ result, onReset, activeTab, setActiveT
                 </div>
               </div>
 
+              <section className="sms-breakdown-card" aria-labelledby="sms-source-evidence-title" style={{ marginTop: '16px', padding: '18px', borderRadius: '12px', background: 'var(--color-bg)', border: '1px solid var(--color-border)' }}>
+                <h3 id="sms-source-evidence-title" className="details-title" style={{ marginTop: 0 }}>
+                  <CpuIcon size={18} color="var(--color-secondary)" />
+                  <span>{lang === 'ar' ? 'مصادر الأدلة المنفصلة' : 'Separated evidence sources'}</span>
+                </h3>
+                <div className="sms-breakdown-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '12px' }}>
+                  <div className="detail-item"><span className="detail-label">ML / LightGBM</span><span className="detail-value"><code>{smsSources.ml_model?.status || ml.source || 'NOT_REPORTED'}</code><br />{smsSources.ml_model?.classification || ml.classification || 'UNKNOWN'}</span></div>
+                  <div className="detail-item"><span className="detail-label">VirusTotal</span><span className="detail-value"><code>{smsSources.virustotal?.status || vt.provider_status || vt.status || 'NOT_REPORTED'}</code><br />{smsSources.virustotal?.classification || vt.status || 'UNKNOWN'}</span></div>
+                  <div className="detail-item"><span className="detail-label">Gemini</span><span className="detail-value"><code>{smsSources.gemini?.status || exp.provider_status || 'NOT_REPORTED'}</code><br />{smsSources.gemini?.provider || exp.provider || 'NOT_REPORTED'}</span></div>
+                  <div className="detail-item"><span className="detail-label">{lang === 'ar' ? 'قاعدة القرار' : 'Decision rule'}</span><span className="detail-value"><code>{smsDecision.decision_code || 'SMS_CONSERVATIVE_TRIAGE'}</code></span></div>
+                </div>
+                <p className="muted" style={{ marginBottom: 0, marginTop: '12px' }}>
+                  {lang === 'ar' ? 'ML وVirusTotal يقدمان إشارات/حقائق للروابط المضمّنة؛ Gemini يقدم شرحًا مساعدًا ولا يثبت هوية المرسل.' : 'ML and VirusTotal provide signals/facts for embedded links; Gemini provides supporting explanation and does not verify sender identity.'}
+                </p>
+                {Array.isArray(smsObservations.text_indicators) && smsObservations.text_indicators.length > 0 && <p className="muted" style={{ marginBottom: 0 }}>{lang === 'ar' ? 'مؤشرات النص المقاسة: ' : 'Measured text indicators: '}<code>{smsObservations.text_indicators.join(lang === 'ar' ? '، ' : ', ')}</code></p>}
+                {smsSources.gemini?.fallback_reason && <p className="muted" style={{ marginBottom: 0 }}>{lang === 'ar' ? 'سبب Gemini الاحتياطي: ' : 'Gemini fallback reason: '}<code>{smsSources.gemini.fallback_reason}</code></p>}
+                <p className="muted" style={{ marginBottom: 0 }}>{lang === 'ar' ? 'التغطية: ' : 'Coverage: '}<code>{smsCoverage.status || analysisCoverage}</code> — {smsCoverage.links_scanned ?? linksScannedCount} / {smsCoverage.links_detected ?? extractedUrls.length} {lang === 'ar' ? 'رابطًا' : 'links'}</p>
+              </section>
+
               <div role="note" className="sms-calibration-note" style={{ marginTop: '20px', padding: '14px 16px', borderRadius: '12px', background: 'var(--color-bg-subtle)', border: '1px solid var(--color-border-subtle)', color: 'var(--color-text-subtle)', fontSize: '0.85rem', lineHeight: '1.6' }}>
                 {lang === 'ar'
                   ? 'لا نعرض درجات رقمية للضغط أو سرقة البيانات أو الانتحال قبل معايرتها والتحقق منها على مجموعة مستقلة.'
@@ -400,9 +431,9 @@ export default function SmsResultScreen({ result, onReset, activeTab, setActiveT
                     </h3>
                   </div>
 
-                  {portalHref && (
+                  {(portalHref || (hasReferencePortal && officialPortal)) && (
                     <a
-                      href={portalHref}
+                      href={portalHref || `https://${officialPortal}`}
                       target="_blank"
                       rel="noopener noreferrer"
                       className="btn btn-primary"
