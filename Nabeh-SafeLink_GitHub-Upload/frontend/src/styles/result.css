@@ -687,12 +687,6 @@
   vertical-align: middle;
 }
 
-.evidence-code-icon {
-  flex: 0 0 auto;
-  font-size: 1.05rem;
-  line-height: 1;
-}
-
 .evidence-code-label {
   font-weight: 600;
 }
@@ -718,5 +712,4 @@
 
 @media (max-width: 560px) {
   .evidence-code-explanation { align-items: flex-start; font-size: 0.82rem; }
-  .evidence-code-icon { margin-top: 0.18rem; }
 }
