@@ -1,4 +1,5 @@
 import '../styles/url-evidence-card.css';
+import { EvidenceCode } from '../utils/evidenceExplanations';
 
 function formatTimestamp(value, lang) {
   if (value === null || value === undefined || value === '') return null;
@@ -28,9 +29,9 @@ export default function UrlEvidenceCard({ card, lang = 'ar', t }) {
     NOT_REPORTED_BY_PROVIDER: 'ProviderNotReported',
   };
   const statusLabel = (value) => {
-    if (!value) return 'UNKNOWN';
+    if (!value) return <EvidenceCode value="UNKNOWN" lang={lang} />;
     const key = statusKey[value];
-    return key ? `${text(key)} (${value})` : value;
+    return key ? <>{text(key)} <code>({value})</code></> : <EvidenceCode value={value} lang={lang} />;
   };
   const decision = card.decision || {};
   const decisionInputs = decision.inputs || {};
@@ -95,33 +96,33 @@ export default function UrlEvidenceCard({ card, lang = 'ar', t }) {
 
       <section className="url-evidence-decision" aria-labelledby="url-evidence-decision-title">
         <h3 id="url-evidence-decision-title">{text('Decision')}</h3>
-        <p>{text(reasonKey)}</p>
+        <p>{text(reasonKey)} <EvidenceCode value={decision.code || 'INSUFFICIENT_EVIDENCE'} lang={lang} /></p>
         <div className="url-evidence-decision-inputs">
           <h4>{text('DecisionInputs')}</h4>
           <dl>
-            <div><dt>{text('VtStatus')}</dt><dd><code>{decisionInputs.virustotal_status || 'UNKNOWN'}</code></dd></div>
-            <div><dt>{text('ProviderStatus')}</dt><dd><code>{statusLabel(decisionInputs.virustotal_provider_status || 'NOT_REPORTED_BY_PROVIDER')}</code></dd></div>
+            <div><dt>{text('VtStatus')}</dt><dd><EvidenceCode value={decisionInputs.virustotal_status || 'UNKNOWN'} lang={lang} /></dd></div>
+            <div><dt>{text('ProviderStatus')}</dt><dd>{statusLabel(decisionInputs.virustotal_provider_status || 'NOT_REPORTED_BY_PROVIDER')}</dd></div>
             <div><dt>{text('Malicious')}</dt><dd>{decisionCounts.malicious ?? '—'}</dd></div>
             <div><dt>{text('Suspicious')}</dt><dd>{decisionCounts.suspicious ?? '—'}</dd></div>
-            <div><dt>{text('ModelClass')}</dt><dd><code>{decisionInputs.ml_classification || 'UNKNOWN'}</code></dd></div>
-            <div><dt>{text('ModelSource')}</dt><dd><code>{decisionInputs.ml_source || 'NOT_REPORTED'}</code></dd></div>
-            <div><dt>{lang === 'ar' ? 'إشارات ML الصريحة' : 'Explicit ML signals'}</dt><dd><code>{mlSignals.length ? mlSignals.join(lang === 'ar' ? '، ' : ', ') : 'NONE_REPORTED'}</code></dd></div>
+            <div><dt>{text('ModelClass')}</dt><dd><EvidenceCode value={decisionInputs.ml_classification || 'UNKNOWN'} lang={lang} /></dd></div>
+            <div><dt>{text('ModelSource')}</dt><dd><EvidenceCode value={decisionInputs.ml_source || 'NOT_REPORTED'} lang={lang} /></dd></div>
+            <div><dt>{lang === 'ar' ? 'إشارات ML الصريحة' : 'Explicit ML signals'}</dt><dd>{mlSignals.length ? mlSignals.map((signal) => <div key={signal}><EvidenceCode value={signal} lang={lang} /></div>) : <EvidenceCode value="NONE_REPORTED" lang={lang} />}</dd></div>
           </dl>
         </div>
         <div className="url-evidence-meta">
-          <span><strong>{text('RuleLabel')}:</strong> <code>{decision.code || 'INSUFFICIENT_EVIDENCE'}</code></span>
-          <span><strong>{text('Policy')}:</strong> <code>{decision.policy_version || '—'}</code></span>
+            <span><strong>{text('RuleLabel')}:</strong> <EvidenceCode value={decision.code || 'INSUFFICIENT_EVIDENCE'} lang={lang} /></span>
+          <span><strong>{text('Policy')}:</strong> <EvidenceCode value={decision.policy_version || 'NOT_REPORTED'} lang={lang} /></span>
         </div>
         {Array.isArray(decisionAudit.rules_applied) && decisionAudit.rules_applied.length > 0 && (
           <div className="url-evidence-note" role="note">
             <strong>{lang === 'ar' ? 'تدقيق الدمج — القاعدة المطبقة: ' : 'Fusion audit — applied rule: '}</strong>
-            <code>{decisionAudit.rules_applied.join(lang === 'ar' ? '، ' : ', ')}</code>
+            {decisionAudit.rules_applied.map((rule) => <div key={rule}><EvidenceCode value={rule} lang={lang} /></div>)}
           </div>
         )}
         {unknownAudit.is_unknown && Array.isArray(unknownAudit.reason_codes) && (
           <div className="url-evidence-note" role="status">
             <strong>{lang === 'ar' ? 'أسباب UNKNOWN: ' : 'UNKNOWN reasons: '}</strong>
-            <code>{unknownAudit.reason_codes.join(lang === 'ar' ? '، ' : ', ')}</code>
+            {unknownAudit.reason_codes.map((reason) => <div key={reason}><EvidenceCode value={reason} lang={lang} /></div>)}
           </div>
         )}
         {thresholdRows.length > 0 && (
@@ -138,9 +139,9 @@ export default function UrlEvidenceCard({ card, lang = 'ar', t }) {
         <section className="url-evidence-panel" aria-labelledby="url-evidence-model-title">
           <h3 id="url-evidence-model-title">{text('Model')}</h3>
           <dl>
-            <div><dt>{text('Status')}</dt><dd><code>{ml.status || 'UNKNOWN'}</code></dd></div>
-            <div><dt>{text('Classification')}</dt><dd><code>{ml.classification || 'UNKNOWN'}</code></dd></div>
-            <div><dt>{text('Source')}</dt><dd><code>{ml.source || 'NOT_REPORTED'}</code></dd></div>
+            <div><dt>{text('Status')}</dt><dd><EvidenceCode value={ml.status || 'UNKNOWN'} lang={lang} /></dd></div>
+            <div><dt>{text('Classification')}</dt><dd><EvidenceCode value={ml.classification || 'UNKNOWN'} lang={lang} /></dd></div>
+            <div><dt>{text('Source')}</dt><dd><EvidenceCode value={ml.source || 'NOT_REPORTED'} lang={lang} /></dd></div>
             <div>
               <dt>{text('PhishingProbability')}</dt>
               <dd>
@@ -149,7 +150,7 @@ export default function UrlEvidenceCard({ card, lang = 'ar', t }) {
                   : text('ProbabilityUnavailable')}
               </dd>
             </div>
-            <div><dt>{text('ProbabilityStatus')}</dt><dd><code>{ml.probability_status || 'UNAVAILABLE'}</code></dd></div>
+            <div><dt>{text('ProbabilityStatus')}</dt><dd><EvidenceCode value={ml.probability_status || 'UNAVAILABLE'} lang={lang} /></dd></div>
             {hasCalibratedProbability && ml.threshold !== null && ml.threshold !== undefined && (
               <div><dt>{text('ModelThreshold')}</dt><dd>{(Number(ml.threshold) * 100).toFixed(1)}%</dd></div>
             )}
@@ -166,17 +167,17 @@ export default function UrlEvidenceCard({ card, lang = 'ar', t }) {
         <section className="url-evidence-panel" aria-labelledby="url-evidence-vt-title">
           <h3 id="url-evidence-vt-title">{text('VirusTotal')}</h3>
           <dl>
-            <div><dt>{text('Status')}</dt><dd><code>{statusLabel(vt.status)}</code></dd></div>
-            <div><dt>{text('Classification')}</dt><dd><code>{vt.classification || 'UNKNOWN'}</code></dd></div>
+            <div><dt>{text('Status')}</dt><dd>{statusLabel(vt.status)}</dd></div>
+            <div><dt>{text('Classification')}</dt><dd><EvidenceCode value={vt.classification || 'UNKNOWN'} lang={lang} /></dd></div>
             {!unavailableCounts && countRows.map(([key, value]) => (
               <div key={key}><dt>{text(key)}</dt><dd>{Number.isFinite(Number(value)) ? Number(value) : '—'}</dd></div>
             ))}
             {unavailableCounts && <div><dt>{text('EngineCounts')}</dt><dd>{text('NotAvailable')}</dd></div>}
             {formatTimestamp(vt.last_analysis_date, lang) && <div><dt>{text('ProviderTime')}</dt><dd>{formatTimestamp(vt.last_analysis_date, lang)} UTC</dd></div>}
             {formatTimestamp(vt.evidence_timestamp, lang) && <div><dt>{text('ReportTime')}</dt><dd>{formatTimestamp(vt.evidence_timestamp, lang)} UTC</dd></div>}
-            {(vt.freshness_reason || vt.analysis_freshness_reason) && <div><dt>{lang === 'ar' ? 'سبب حداثة التقرير' : 'Freshness reason'}</dt><dd>{vt.freshness_reason || vt.analysis_freshness_reason}</dd></div>}
-            {vt.error && <div><dt>{text('ErrorCode')}</dt><dd><code>{String(vt.error).slice(0, 100)}</code></dd></div>}
-            <div><dt>{lang === 'ar' ? 'دور المصدر' : 'Source role'}</dt><dd><code>{vt.role || 'PROVIDER_FACTS_ONLY'}</code></dd></div>
+            {(vt.freshness_reason || vt.analysis_freshness_reason) && <div><dt>{lang === 'ar' ? 'سبب حداثة التقرير' : 'Freshness reason'}</dt><dd><EvidenceCode value={vt.freshness_reason || vt.analysis_freshness_reason} lang={lang} /></dd></div>}
+            {vt.error && <div><dt>{text('ErrorCode')}</dt><dd><EvidenceCode value={String(vt.error).slice(0, 100)} lang={lang} /></dd></div>}
+            <div><dt>{lang === 'ar' ? 'دور المصدر' : 'Source role'}</dt><dd><EvidenceCode value={vt.role || 'PROVIDER_FACTS_ONLY'} lang={lang} /></dd></div>
           </dl>
           {scanners.length > 0 ? (
             <details className="url-evidence-details">
@@ -188,7 +189,7 @@ export default function UrlEvidenceCard({ card, lang = 'ar', t }) {
                   <thead><tr><th scope="col">{text('Engine')}</th><th scope="col">{text('Category')}</th><th scope="col">{text('Method')}</th><th scope="col">{text('RawResult')}</th></tr></thead>
                   <tbody>{scanners.map((item, index) => (
                     <tr key={`${item.engine_name || 'engine'}-${index}`}>
-                      <td>{item.engine_name || '—'}</td><td><code>{item.category || 'unknown'}</code></td><td>{item.method || '—'}</td><td>{item.result || '—'}</td>
+                      <td>{item.engine_name || '—'}</td><td><EvidenceCode value={item.category || 'unknown'} lang={lang} /></td><td>{item.method || '—'}</td><td>{item.result || '—'}</td>
                     </tr>
                   ))}</tbody>
                 </table>
@@ -204,7 +205,7 @@ export default function UrlEvidenceCard({ card, lang = 'ar', t }) {
           <dl className="url-evidence-observations">
             {observations.map((item, index) => (
               <div key={`${item.code}-${index}`}>
-                <dt>{text(observationKeys[item.code] || 'NotAvailable')}</dt>
+                <dt>{text(observationKeys[item.code] || 'NotAvailable')} <EvidenceCode value={item.code} lang={lang} /></dt>
                 <dd>{displayValue(item.value, text, lang)}</dd>
               </div>
             ))}
@@ -228,9 +229,9 @@ export default function UrlEvidenceCard({ card, lang = 'ar', t }) {
             : `Domain alignment: ${domainVerification.status || 'NOT_REPORTED'} — this does not prove domain ownership.`}
         </p>
         <dl>
-          <div><dt>{lang === 'ar' ? 'حالة Gemini' : 'Gemini status'}</dt><dd><code>{explanationSource.provider_status || 'NOT_REPORTED'}</code></dd></div>
-          {explanationSource.fallback_reason && <div><dt>{lang === 'ar' ? 'سبب الاحتياط' : 'Fallback reason'}</dt><dd><code>{explanationSource.fallback_reason}</code></dd></div>}
-          <div><dt>{lang === 'ar' ? 'دور Gemini' : 'Gemini role'}</dt><dd><code>{explanationSource.role || 'SUPPORTING_EXPLANATION_NOT_DECISION_SOURCE'}</code></dd></div>
+          <div><dt>{lang === 'ar' ? 'حالة Gemini' : 'Gemini status'}</dt><dd><EvidenceCode value={explanationSource.provider_status || 'NOT_REPORTED'} lang={lang} /></dd></div>
+          {explanationSource.fallback_reason && <div><dt>{lang === 'ar' ? 'سبب الاحتياط' : 'Fallback reason'}</dt><dd><EvidenceCode value={explanationSource.fallback_reason} lang={lang} /></dd></div>}
+          <div><dt>{lang === 'ar' ? 'دور Gemini' : 'Gemini role'}</dt><dd><EvidenceCode value={explanationSource.role || 'SUPPORTING_EXPLANATION_NOT_DECISION_SOURCE'} lang={lang} /></dd></div>
         </dl>
         {citations.length > 0 ? (
           <ul>

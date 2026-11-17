@@ -15,6 +15,7 @@ import {
   MailIcon,
   CpuIcon
 } from './Icons';
+import { EvidenceCode } from '../utils/evidenceExplanations';
 import '../styles/result.css';
 
 export default function SmsResultScreen({ result, onReset, activeTab, setActiveTab, isGuest = true, onNavigateAuth }) {
@@ -263,9 +264,9 @@ export default function SmsResultScreen({ result, onReset, activeTab, setActiveT
               <details className="result-details-disclosure" style={{ marginTop: '14px' }}>
                 <summary>{lang === 'ar' ? 'بطاقة الأدلة القابلة للتدقيق' : 'Auditable SMS evidence card'}</summary>
                 <div style={{ marginTop: '12px', display: 'grid', gap: '10px', fontSize: '0.86rem' }}>
-                  <div><strong>{lang === 'ar' ? 'دور البطاقة:' : 'Card role:'}</strong> {smsEvidenceCard.decision?.decision_role || 'CONSERVATIVE_SMS_TRIAGE_NOT_AUTHENTICITY_PROOF'}</div>
-                  <div><strong>{lang === 'ar' ? 'المصدر:' : 'Decision source:'}</strong> <code>{smsEvidenceCard.decision?.source || result?.source || 'NOT_REPORTED'}</code></div>
-                  <div><strong>{lang === 'ar' ? 'التغطية:' : 'Coverage:'}</strong> <code>{smsEvidenceCard.coverage?.status || analysisCoverage}</code></div>
+                  <div><strong>{lang === 'ar' ? 'دور البطاقة:' : 'Card role:'}</strong> <EvidenceCode value={smsEvidenceCard.decision?.decision_role || 'SMS_CONSERVATIVE_TRIAGE_NOT_AUTHENTICITY_PROOF'} lang={lang} /></div>
+                  <div><strong>{lang === 'ar' ? 'المصدر:' : 'Decision source:'}</strong> <EvidenceCode value={smsEvidenceCard.decision?.source || result?.source || 'NOT_REPORTED'} lang={lang} /></div>
+                  <div><strong>{lang === 'ar' ? 'التغطية:' : 'Coverage:'}</strong> <EvidenceCode value={smsEvidenceCard.coverage?.status || analysisCoverage} lang={lang} /></div>
                   <div><strong>{lang === 'ar' ? 'الروابط المفحوصة / غير المفحوصة:' : 'Scanned / not scanned links:'}</strong> {smsEvidenceCard.coverage?.links_scanned ?? linksScannedCount} / {smsEvidenceCard.coverage?.links_not_scanned ?? linksNotScannedCount}</div>
                   {Array.isArray(smsEvidenceCard.limitations) && smsEvidenceCard.limitations.length > 0 && (
                     <ul style={{ margin: 0, paddingInlineStart: '22px' }}>
@@ -312,7 +313,7 @@ export default function SmsResultScreen({ result, onReset, activeTab, setActiveT
               {exp.summary && <p className="explanation-text" style={{ fontSize: '0.95rem', lineHeight: '1.7' }}>{exp.summary}</p>}
               <div style={{ marginTop: '14px', padding: '12px 14px', borderRadius: '10px', background: 'var(--color-bg-subtle)', border: '1px solid var(--color-border-subtle)', fontSize: '0.86rem', lineHeight: '1.6' }}>
                 <strong>{lang === 'ar' ? 'التحقق من محاذاة النطاق:' : 'Domain alignment check:'}</strong>{' '}
-                <span>{domainVerification.status || (lang === 'ar' ? 'غير متاح' : 'Not reported')}</span>
+                <EvidenceCode value={domainVerification.status || 'NOT_REPORTED'} lang={lang} />
                 {domainVerification.observed_host && <span dir="ltr"> — {domainVerification.observed_host}</span>}
                 <div style={{ color: 'var(--color-text-subtle)' }}>
                   {lang === 'ar'
@@ -334,7 +335,7 @@ export default function SmsResultScreen({ result, onReset, activeTab, setActiveT
               )}
               <div style={{ marginTop: '12px', padding: '10px 12px', borderRadius: '8px', background: 'var(--color-bg-subtle)', border: '1px solid var(--color-border-subtle)', fontSize: '0.84rem' }}>
                 <strong>{lang === 'ar' ? 'حالة البحث والتحقق: ' : 'Search and verification status: '}</strong>
-                <code>{geminiSearchStatus}</code>
+                <EvidenceCode value={geminiSearchStatus} lang={lang} />
                 {exp.claimed_entity && <span> — {lang === 'ar' ? 'الجهة المدعاة: ' : 'Claimed entity: '}{exp.claimed_entity}</span>}
                 <div className="muted" style={{ marginTop: '4px' }}>{lang === 'ar' ? 'المصادر تساعد في التحقق ولا تثبت هوية مرسل الرسالة.' : 'Sources support verification but do not prove the SMS sender identity.'}</div>
               </div>
@@ -391,17 +392,17 @@ export default function SmsResultScreen({ result, onReset, activeTab, setActiveT
                   <span>{lang === 'ar' ? 'مصادر الأدلة المنفصلة' : 'Separated evidence sources'}</span>
                 </h3>
                 <div className="sms-breakdown-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '12px' }}>
-                  <div className="detail-item"><span className="detail-label">ML / LightGBM</span><span className="detail-value"><code>{smsSources.ml_model?.status || ml.source || 'NOT_REPORTED'}</code><br />{smsSources.ml_model?.classification || ml.classification || 'UNKNOWN'}</span></div>
-                  <div className="detail-item"><span className="detail-label">VirusTotal</span><span className="detail-value"><code>{smsSources.virustotal?.status || vt.provider_status || vt.status || 'NOT_REPORTED'}</code><br />{smsSources.virustotal?.classification || vt.status || 'UNKNOWN'}</span></div>
-                  <div className="detail-item"><span className="detail-label">Gemini</span><span className="detail-value"><code>{smsSources.gemini?.status || exp.provider_status || 'NOT_REPORTED'}</code><br />{smsSources.gemini?.provider || exp.provider || 'NOT_REPORTED'}</span></div>
-                  <div className="detail-item"><span className="detail-label">{lang === 'ar' ? 'قاعدة القرار' : 'Decision rule'}</span><span className="detail-value"><code>{smsDecision.decision_code || 'SMS_CONSERVATIVE_TRIAGE'}</code></span></div>
+                  <div className="detail-item"><span className="detail-label">ML / LightGBM</span><span className="detail-value"><EvidenceCode value={smsSources.ml_model?.status || ml.source || 'NOT_REPORTED'} lang={lang} /><br /><EvidenceCode value={smsSources.ml_model?.classification || ml.classification || 'UNKNOWN'} lang={lang} /></span></div>
+                  <div className="detail-item"><span className="detail-label">VirusTotal</span><span className="detail-value"><EvidenceCode value={smsSources.virustotal?.status || vt.provider_status || vt.status || 'NOT_REPORTED'} lang={lang} /><br /><EvidenceCode value={smsSources.virustotal?.classification || vt.status || 'UNKNOWN'} lang={lang} /></span></div>
+                  <div className="detail-item"><span className="detail-label">Gemini</span><span className="detail-value"><EvidenceCode value={smsSources.gemini?.status || exp.provider_status || 'NOT_REPORTED'} lang={lang} /><br /><EvidenceCode value={smsSources.gemini?.provider || exp.provider || 'NOT_REPORTED'} lang={lang} /></span></div>
+                  <div className="detail-item"><span className="detail-label">{lang === 'ar' ? 'قاعدة القرار' : 'Decision rule'}</span><span className="detail-value"><EvidenceCode value={smsDecision.decision_code || 'SMS_CONSERVATIVE_TRIAGE'} lang={lang} /></span></div>
                 </div>
                 <p className="muted" style={{ marginBottom: 0, marginTop: '12px' }}>
                   {lang === 'ar' ? 'ML وVirusTotal يقدمان إشارات/حقائق للروابط المضمّنة؛ Gemini يقدم شرحًا مساعدًا ولا يثبت هوية المرسل.' : 'ML and VirusTotal provide signals/facts for embedded links; Gemini provides supporting explanation and does not verify sender identity.'}
                 </p>
                 {Array.isArray(smsObservations.text_indicators) && smsObservations.text_indicators.length > 0 && <p className="muted" style={{ marginBottom: 0 }}>{lang === 'ar' ? 'مؤشرات النص المقاسة: ' : 'Measured text indicators: '}<code>{smsObservations.text_indicators.join(lang === 'ar' ? '، ' : ', ')}</code></p>}
-                {smsSources.gemini?.fallback_reason && <p className="muted" style={{ marginBottom: 0 }}>{lang === 'ar' ? 'سبب Gemini الاحتياطي: ' : 'Gemini fallback reason: '}<code>{smsSources.gemini.fallback_reason}</code></p>}
-                <p className="muted" style={{ marginBottom: 0 }}>{lang === 'ar' ? 'التغطية: ' : 'Coverage: '}<code>{smsCoverage.status || analysisCoverage}</code> — {smsCoverage.links_scanned ?? linksScannedCount} / {smsCoverage.links_detected ?? extractedUrls.length} {lang === 'ar' ? 'رابطًا' : 'links'}</p>
+                {smsSources.gemini?.fallback_reason && <p className="muted" style={{ marginBottom: 0 }}>{lang === 'ar' ? 'سبب Gemini الاحتياطي: ' : 'Gemini fallback reason: '}<EvidenceCode value={smsSources.gemini.fallback_reason} lang={lang} /></p>}
+                <p className="muted" style={{ marginBottom: 0 }}>{lang === 'ar' ? 'التغطية: ' : 'Coverage: '}<EvidenceCode value={smsCoverage.status || analysisCoverage} lang={lang} /> — {smsCoverage.links_scanned ?? linksScannedCount} / {smsCoverage.links_detected ?? extractedUrls.length} {lang === 'ar' ? 'رابطًا' : 'links'}</p>
               </section>
 
               <div role="note" className="sms-calibration-note" style={{ marginTop: '20px', padding: '14px 16px', borderRadius: '12px', background: 'var(--color-bg-subtle)', border: '1px solid var(--color-border-subtle)', color: 'var(--color-text-subtle)', fontSize: '0.85rem', lineHeight: '1.6' }}>
