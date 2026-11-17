@@ -93,8 +93,20 @@
 }
 
 @media (min-width: 1200px) {
-  .url-evidence-decision { grid-column: 1; }
-  .url-evidence-grid { grid-column: 2; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); }
+  .url-evidence-decision,
+  .url-evidence-grid,
+  .url-evidence-observations-panel,
+  .url-evidence-limitations { grid-column: 1 / -1; }
+  .url-evidence-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+@media (max-width: 679px) {
+  .url-evidence-decision-inputs dl > div,
+  .url-evidence-panel dl > div,
+  .url-evidence-details dl > div {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 3px;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {

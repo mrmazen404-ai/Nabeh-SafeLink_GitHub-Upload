@@ -101,12 +101,17 @@ export default function UrlResultScreen({ result, onReset, activeTab, setActiveT
   const hasVtCounts = vt.analysis_data_available === true || totalEngines > 0;
   const vtMaliciousCount = Number(vt.malicious || 0);
   const vtSuspiciousCount = Number(vt.suspicious || 0);
+  const vtHarmlessCount = Number(vt.harmless || 0);
+  const vtUndetectedCount = Number(vt.undetected || 0);
+  const vtTimeoutCount = Number(vt.timeout || 0);
   const geminiProvider = String(exp.provider || result?.stages?.stage3_gemini?.provider || '').toUpperCase();
   const usesGemini = geminiProvider.includes('GEMINI');
   const assistantClassification = String(exp.classification || result?.stages?.stage3_gemini?.classification || '').toUpperCase();
   const maliciousPct = totalEngines > 0 ? (vtMaliciousCount / totalEngines) * 100 : 0;
   const suspiciousPct = totalEngines > 0 ? (vtSuspiciousCount / totalEngines) * 100 : 0;
   const harmlessPct = totalEngines > 0 ? ((vt.harmless || 0) / totalEngines) * 100 : 0;
+  const undetectedPct = totalEngines > 0 ? (vtUndetectedCount / totalEngines) * 100 : 0;
+  const timeoutPct = totalEngines > 0 ? (vtTimeoutCount / totalEngines) * 100 : 0;
 
   const handleCopyReport = () => {
     if (isGuest || !navigator.clipboard?.writeText) return;
@@ -140,7 +145,7 @@ export default function UrlResultScreen({ result, onReset, activeTab, setActiveT
       <main className="page-container">
         <div className="result-desktop-grid">
           {/* Main URL Analysis Section */}
-          <section className="card result-main-card" aria-label="شاشة نتيجة فحص الرابط">
+          <section className="card result-main-card" aria-label={lang === 'ar' ? 'شاشة نتيجة فحص الرابط' : 'URL scan result screen'}>
             {/* Status Badge */}
             <div className={`result-badge result-badge-${config.className}`} role="status">
               <StatusIcon size={32} color="currentColor" />
@@ -270,6 +275,8 @@ export default function UrlResultScreen({ result, onReset, activeTab, setActiveT
                   {vt.malicious > 0 && <div style={{ width: `${maliciousPct}%`, background: 'var(--color-danger)' }} title={`Malicious: ${vt.malicious}`} />}
                   {vt.suspicious > 0 && <div style={{ width: `${suspiciousPct}%`, background: 'var(--color-warning)' }} title={`Suspicious: ${vt.suspicious}`} />}
                   {vt.harmless > 0 && <div style={{ width: `${harmlessPct}%`, background: 'var(--color-success)' }} title={`Harmless: ${vt.harmless}`} />}
+                  {vtUndetectedCount > 0 && <div style={{ width: `${undetectedPct}%`, background: 'var(--color-border)' }} title={`Undetected: ${vtUndetectedCount}`} />}
+                  {vtTimeoutCount > 0 && <div style={{ width: `${timeoutPct}%`, background: 'var(--color-text-muted)' }} title={`Timeout: ${vtTimeoutCount}`} />}
                 </div>}
 
                 {hasVtCounts && <div className="details-grid">
@@ -283,7 +290,15 @@ export default function UrlResultScreen({ result, onReset, activeTab, setActiveT
                   </div>
                   <div className="detail-item">
                     <span className="detail-label">{t('result.vtSafe')}</span>
-                    <span className="detail-value" style={{ color: 'var(--color-success)' }}>{vt.harmless || 0}</span>
+                    <span className="detail-value" style={{ color: 'var(--color-success)' }}>{vtHarmlessCount}</span>
+                  </div>
+                  <div className="detail-item">
+                    <span className="detail-label">{lang === 'ar' ? 'غير مكتشف' : 'Undetected'}</span>
+                    <span className="detail-value">{vtUndetectedCount}</span>
+                  </div>
+                  <div className="detail-item">
+                    <span className="detail-label">{lang === 'ar' ? 'انتهت المهلة' : 'Timeout'}</span>
+                    <span className="detail-value">{vtTimeoutCount}</span>
                   </div>
                   <div className="detail-item">
                     <span className="detail-label">{t('result.vtTotal')}</span>

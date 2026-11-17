@@ -172,7 +172,7 @@ export default function SmsResultScreen({ result, onReset, activeTab, setActiveT
             </div>
 
             {/* Inspected SMS Content Card */}
-            <div className="inspected-url-box" style={{ background: 'var(--color-bg-subtle)', border: '1px solid var(--color-border-subtle)', borderRadius: '12px', padding: '16px' }}>
+            <div className="inspected-url-box sms-message-card" style={{ background: 'var(--color-bg-subtle)', border: '1px solid var(--color-border-subtle)', borderRadius: '12px', padding: '16px' }}>
               <span className="url-label" style={{ display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--color-secondary)', fontWeight: 'bold' }}>
                 <MailIcon size={18} color="var(--color-secondary)" />
                 {lang === 'ar' ? 'نص الرسالة المفحوصة (SMS Text Content):' : 'Inspected SMS Text:'}
@@ -222,6 +222,7 @@ export default function SmsResultScreen({ result, onReset, activeTab, setActiveT
                 </div>
               )}
               <div
+                className="sms-coverage-summary"
                 role={analysisCoverage === 'PARTIAL' ? 'alert' : 'status'}
                 style={{
                   marginTop: '14px',
@@ -279,6 +280,51 @@ export default function SmsResultScreen({ result, onReset, activeTab, setActiveT
 
             <h2 className="result-title">{config.title}</h2>
             <p className="result-desc">{config.description}</p>
+
+              {/* OFFICIAL PORTAL & STEP-BY-STEP ACTION PLAN */}
+              <div className="sms-action-plan" style={{ marginTop: '24px', padding: '20px', borderRadius: '14px', background: 'var(--color-secondary-subtle)', border: '1px solid var(--color-secondary)', boxShadow: '0 4px 12px rgba(30,94,255,0.06)' }}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '12px', marginBottom: '14px' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                    <ShieldCheckIcon size={24} color="var(--color-secondary)" />
+                    <h3 style={{ margin: 0, fontSize: '1.05rem', fontWeight: '800', color: 'var(--color-primary)' }}>
+                      {lang === 'ar' ? 'خطوات أمان مقترحة:' : 'Suggested safety steps:'}
+                    </h3>
+                  </div>
+
+                  {portalHref && (
+                    <a
+                      href={portalHref}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="btn btn-primary"
+                      style={{ padding: '8px 16px', fontSize: '0.85rem', textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: '6px' }}
+                    >
+                      <LinkIcon size={14} color="#FFFFFF" />
+                      <span>{lang === 'ar' ? 'فتح النطاق المرجعي الموثق' : 'Open curated reference domain'}</span>
+                    </a>
+                  )}
+                  {hasReferencePortal && officialPortal && !portalHref && (
+                    <span className="sms-reference-note" role="note" style={{ fontSize: '0.8rem', color: 'var(--color-text-subtle)' }}>
+                      {lang === 'ar' ? 'هذا مرجع غير قابل للنقر؛ لا يثبت هوية المرسل.' : 'This is a non-clickable reference; it does not verify the sender.'}
+                    </span>
+                  )}
+                </div>
+
+                {/* Step-by-step guidance list */}
+                {actionSteps.length > 0 ? (
+                  <ol style={{ paddingRight: '20px', paddingLeft: '20px', margin: 0, display: 'flex', flexDirection: 'column', gap: '10px', fontSize: '0.9rem', color: 'var(--color-text-primary)', lineHeight: '1.6' }}>
+                    {actionSteps.map((step, idx) => (
+                      <li key={idx} style={{ fontWeight: '600' }}>
+                        {step}
+                      </li>
+                    ))}
+                  </ol>
+                ) : exp.recommendation ? (
+                  <p style={{ margin: 0, fontSize: '0.9rem', color: 'var(--color-text-primary)', lineHeight: '1.6' }}>
+                    {exp.recommendation}
+                  </p>
+                ) : null}
+              </div>
 
             {/* Fraud Risk Gauge Bar */}
             {fraudProb !== null && (
@@ -422,45 +468,7 @@ export default function SmsResultScreen({ result, onReset, activeTab, setActiveT
                 </ul>
               )}
 
-              {/* OFFICIAL PORTAL & STEP-BY-STEP ACTION PLAN */}
-              <div className="sms-action-plan" style={{ marginTop: '24px', padding: '20px', borderRadius: '14px', background: 'var(--color-secondary-subtle)', border: '1px solid var(--color-secondary)', boxShadow: '0 4px 12px rgba(30,94,255,0.06)' }}>
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '12px', marginBottom: '14px' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                    <ShieldCheckIcon size={24} color="var(--color-secondary)" />
-                    <h3 style={{ margin: 0, fontSize: '1.05rem', fontWeight: '800', color: 'var(--color-primary)' }}>
-                      {lang === 'ar' ? 'خطوات أمان مقترحة:' : 'Suggested safety steps:'}
-                    </h3>
-                  </div>
 
-                  {(portalHref || (hasReferencePortal && officialPortal)) && (
-                    <a
-                      href={portalHref || `https://${officialPortal}`}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="btn btn-primary"
-                      style={{ padding: '8px 16px', fontSize: '0.85rem', textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: '6px' }}
-                    >
-                      <LinkIcon size={14} color="#FFFFFF" />
-                      <span>{lang === 'ar' ? 'فتح النطاق المرجعي' : 'Open reference domain'}</span>
-                    </a>
-                  )}
-                </div>
-
-                {/* Step-by-step guidance list */}
-                {actionSteps.length > 0 ? (
-                  <ol style={{ paddingRight: '20px', paddingLeft: '20px', margin: 0, display: 'flex', flexDirection: 'column', gap: '10px', fontSize: '0.9rem', color: 'var(--color-text-primary)', lineHeight: '1.6' }}>
-                    {actionSteps.map((step, idx) => (
-                      <li key={idx} style={{ fontWeight: '600' }}>
-                        {step}
-                      </li>
-                    ))}
-                  </ol>
-                ) : exp.recommendation ? (
-                  <p style={{ margin: 0, fontSize: '0.9rem', color: 'var(--color-text-primary)', lineHeight: '1.6' }}>
-                    {exp.recommendation}
-                  </p>
-                ) : null}
-              </div>
                 </div>
               </details>
             </div>
@@ -510,7 +518,7 @@ export default function SmsResultScreen({ result, onReset, activeTab, setActiveT
               const vtSuspicious = Number(linkVt.suspicious || 0);
               const vtHarmless = Number(linkVt.harmless || 0);
               return (
-                <div className="card details-block" key={`${item?.url || index}-${index}`} style={{ borderInlineStart: '4px solid var(--color-warning)' }}>
+                <div className="card details-block sms-link-analysis-card" key={`${item?.url || index}-${index}`} style={{ borderInlineStart: '4px solid var(--color-warning)' }}>
                   <h3 className="details-title" style={{ color: 'var(--color-warning)' }}>
                     <LinkIcon size={18} color="currentColor" />
                     <span>{lang === 'ar' ? `تحليل الرابط ${index + 1}:` : `Link analysis ${index + 1}:`}</span>

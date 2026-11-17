@@ -569,7 +569,7 @@
   box-shadow: none !important;
 }
 .sms-result-theme .sms-breakdown-grid {
-  grid-template-columns: repeat(4, minmax(0, 1fr)) !important;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)) !important;
   gap: 10px !important;
 }
 .sms-result-theme .sms-breakdown-grid > div { min-width: 0; overflow-wrap: anywhere; }
@@ -673,6 +673,37 @@
   .sms-result-theme .sms-breakdown-grid { grid-template-columns: minmax(0, 1fr) !important; }
   .result-trust-strip > span:not(.result-trust-title) { flex-basis: 100%; }
   .ml-body { align-items: flex-start; flex-direction: column; }
+}
+
+/* Final desktop layout: keep the verdict and technical side panel visible together. */
+@media (min-width: 1101px) {
+  .result-desktop-grid {
+    grid-template-columns: minmax(0, 1.65fr) minmax(300px, .85fr);
+  }
+
+  .sms-result-theme .sms-breakdown-grid {
+    grid-template-columns: repeat(4, minmax(0, 1fr)) !important;
+  }
+}
+
+@media (max-width: 900px) {
+  .sms-result-theme .sms-breakdown-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  }
+}
+
+.sms-result-theme .sms-coverage-summary,
+.sms-result-theme .sms-reference-note,
+.sms-result-theme .sms-action-plan {
+  overflow-wrap: anywhere;
+}
+
+.sms-result-theme .sms-link-analysis-card {
+  min-width: 0;
+}
+
+@media (max-width: 560px) {
+  .sms-result-theme .sms-breakdown-grid { grid-template-columns: minmax(0, 1fr) !important; }
 }
 
 .evidence-code-explanation {
