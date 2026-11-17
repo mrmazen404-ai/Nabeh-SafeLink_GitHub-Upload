@@ -249,8 +249,8 @@ export default function SmsResultScreen({ result, onReset, activeTab, setActiveT
                     {coverageReasons.length > 0 && (
                       <div>
                         {lang === 'ar'
-                          ? `أسباب التغطية الجزئية: ${coverageReasons.join('، ')}`
-                          : `Partial-coverage reasons: ${coverageReasons.join(', ')}`}
+                          ? 'أسباب التغطية الجزئية:'
+                          : 'Partial-coverage reasons:'} {coverageReasons.map((reason) => <EvidenceCode key={reason} value={reason} lang={lang} />)}
                       </div>
                     )}
                     <div>
@@ -400,7 +400,7 @@ export default function SmsResultScreen({ result, onReset, activeTab, setActiveT
                 <p className="muted" style={{ marginBottom: 0, marginTop: '12px' }}>
                   {lang === 'ar' ? 'ML وVirusTotal يقدمان إشارات/حقائق للروابط المضمّنة؛ Gemini يقدم شرحًا مساعدًا ولا يثبت هوية المرسل.' : 'ML and VirusTotal provide signals/facts for embedded links; Gemini provides supporting explanation and does not verify sender identity.'}
                 </p>
-                {Array.isArray(smsObservations.text_indicators) && smsObservations.text_indicators.length > 0 && <p className="muted" style={{ marginBottom: 0 }}>{lang === 'ar' ? 'مؤشرات النص المقاسة: ' : 'Measured text indicators: '}<code>{smsObservations.text_indicators.join(lang === 'ar' ? '، ' : ', ')}</code></p>}
+                {Array.isArray(smsObservations.text_indicators) && smsObservations.text_indicators.length > 0 && <p className="muted" style={{ marginBottom: 0 }}>{lang === 'ar' ? 'مؤشرات النص المقاسة: ' : 'Measured text indicators: '}{smsObservations.text_indicators.map((indicator) => <EvidenceCode key={indicator} value={indicator} lang={lang} />)}</p>}
                 {smsSources.gemini?.fallback_reason && <p className="muted" style={{ marginBottom: 0 }}>{lang === 'ar' ? 'سبب Gemini الاحتياطي: ' : 'Gemini fallback reason: '}<EvidenceCode value={smsSources.gemini.fallback_reason} lang={lang} /></p>}
                 <p className="muted" style={{ marginBottom: 0 }}>{lang === 'ar' ? 'التغطية: ' : 'Coverage: '}<EvidenceCode value={smsCoverage.status || analysisCoverage} lang={lang} /> — {smsCoverage.links_scanned ?? linksScannedCount} / {smsCoverage.links_detected ?? extractedUrls.length} {lang === 'ar' ? 'رابطًا' : 'links'}</p>
               </section>

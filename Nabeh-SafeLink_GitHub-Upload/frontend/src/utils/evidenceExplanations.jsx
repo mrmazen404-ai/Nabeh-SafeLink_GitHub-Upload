@@ -98,19 +98,39 @@ const LABELS = {
   },
 };
 
+const ICONS = {
+  UNKNOWN: '❔', SAFE: '🟢', SUSPICIOUS: '🟠', DANGEROUS: '🔴', MATCH: '✅', MISMATCH: '⚠️',
+  SEARCH_SUCCESS: '🔎', NO_RESULTS: '🕳️', SEARCH_FAILED: '⚠️', NOT_USED: '⏭️', NOT_CONFIGURED: '⚙️',
+  SUCCESS: '✅', NOT_FOUND: '📭', NOT_REPORTED: 'ℹ️', MODEL_ONLY: '🧠', TRUSTED: '🛡️', OFFICIAL: '🏛️',
+  CURATED_ALLOWLIST_REFERENCE: '🔗', CLAIMED_BRAND_DOMAIN_MISMATCH: '🎭', PUNYCODE_HOST: '🔤',
+  BRAND_LIKE_HOST: '🏷️', SUSPICIOUS_HOST_STRUCTURE: '🧩', ML_MODEL: '🧠', ML_MODEL_CALIBRATED: '📏',
+  VIRUSTOTAL: '🧪', GEMINI_AI: '✨', GEMINI_SEARCH: '🌐', SUPPORTING_EXPLANATION_NOT_DECISION_SOURCE: '💬',
+  PROVIDER_FACTS_ONLY: '📊', SECURITY_SIGNAL_NOT_MODEL_ATTRIBUTION: '🔍', SMS_CONSERVATIVE_TRIAGE: '🛡️',
+  SMS_CONSERVATIVE_TRIAGE_NOT_AUTHENTICITY_PROOF: '🛡️', FULL: '✅', PARTIAL: '⚠️', AI_FEATURE_DISABLED: '⏸️',
+  GEMINI_TIMEOUT: '⏱️', GEMINI_PROVIDER_ERROR: '⚠️', GEMINI_API_KEY_MISSING: '🔑', INSUFFICIENT_EVIDENCE: '❔',
+  RULE_INSUFFICIENT_EVIDENCE: '📋', RULE_ML_SUSPICIOUS_CLASSIFICATION: '🧠', RULE_VT_SIGNAL_SUSPICIOUS: '🧪',
+  RULE_VT_AND_ML_CORROBORATION: '🤝', RULE_ML_HIGH_CONFIDENCE_PLUS_TWO_STRUCTURAL_SIGNALS: '🧠',
+  RULE_VT_MALICIOUS_ENGINE_CONSENSUS: '🚨', FINAL_CLASSIFICATION_UNKNOWN: '❔',
+};
+
 export function explainEvidenceCode(value, lang = 'ar') {
   const code = value === null || value === undefined || value === '' ? 'NOT_REPORTED' : String(value);
   const dictionary = LABELS[lang] || LABELS.en;
   const label = dictionary[code];
-  if (label) return { code, label };
+  if (label) return { code, label, icon: ICONS[code] || '🔎' };
   const readable = code.toLowerCase().replaceAll('_', ' ');
   return {
     code,
     label: lang === 'ar' ? `رمز فني: ${readable} — يحتاج هذا الرمز إلى تعريف خاص` : `Technical code: ${readable} — this code needs a specific definition`,
+    icon: '🔎',
   };
 }
 
 export function EvidenceCode({ value, lang = 'ar', className = '' }) {
   const item = explainEvidenceCode(value, lang);
-  return <span className={className} title={item.label}>{item.label} <code>({item.code})</code></span>;
+  return <span className={`evidence-code-explanation ${className}`} title={item.label}>
+    <span className="evidence-code-icon" aria-hidden="true">{item.icon}</span>
+    <span className="evidence-code-label">{item.label}</span>
+    <code className="evidence-code-technical">{item.code}</code>
+  </span>;
 }

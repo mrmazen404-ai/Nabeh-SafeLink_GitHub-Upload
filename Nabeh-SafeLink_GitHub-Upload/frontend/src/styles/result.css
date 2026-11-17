@@ -674,3 +674,49 @@
   .result-trust-strip > span:not(.result-trust-title) { flex-basis: 100%; }
   .ml-body { align-items: flex-start; flex-direction: column; }
 }
+
+.evidence-code-explanation {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.38rem;
+  max-width: 100%;
+  color: var(--color-text-primary);
+  font-family: var(--font-sans, inherit);
+  font-size: 0.88rem;
+  line-height: 1.55;
+  vertical-align: middle;
+}
+
+.evidence-code-icon {
+  flex: 0 0 auto;
+  font-size: 1.05rem;
+  line-height: 1;
+}
+
+.evidence-code-label {
+  font-weight: 600;
+}
+
+.evidence-code-technical {
+  flex: 0 1 auto;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  padding: 0.1rem 0.35rem;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 0.35rem;
+  color: var(--color-text-subtle);
+  background: var(--color-bg-subtle);
+  font-size: 0.72rem;
+  font-weight: 500;
+}
+
+.detail-value .evidence-code-explanation,
+.url-evidence-panel .evidence-code-explanation {
+  justify-content: flex-start;
+  text-align: start;
+}
+
+@media (max-width: 560px) {
+  .evidence-code-explanation { align-items: flex-start; font-size: 0.82rem; }
+  .evidence-code-icon { margin-top: 0.18rem; }
+}
