@@ -77,7 +77,7 @@ class GeminiExplanation(BaseModel):
 
 
 class GeminiSMSAnalysis(BaseModel):
-    """Allow-listed SMS fields; self-reported model scores are not accepted."""
+    """Stable, allow-listed SMS contract; self-reported model scores are rejected."""
 
     model_config = ConfigDict(extra="ignore", str_strip_whitespace=True)
 
@@ -87,20 +87,30 @@ class GeminiSMSAnalysis(BaseModel):
     recommendation: str = Field(min_length=1, max_length=500)
     limitations: list[str] = Field(default_factory=list, max_length=5)
     claimed_sender: str = Field(default="غير محددة", max_length=160)
+    claimed_entity: str = Field(default="غير متاح", max_length=160)
+    claim_status: Literal["EXPLICIT", "INFERRED", "UNKNOWN"] = "UNKNOWN"
+    observed_url: str = Field(default="غير متاح", max_length=2048)
+    observed_host: str = Field(default="غير متاح", max_length=253)
+    domain_match: Literal["MATCH", "MISMATCH", "UNKNOWN"] = "UNKNOWN"
+    impersonation_signals: list[str] = Field(default_factory=list, max_length=8)
     official_domain: str = Field(default="غير متاح", max_length=253)
     official_portal_url: str = Field(default="غير متاح", max_length=253)
+    portal_source: str = Field(default="غير متاح", max_length=160)
+    search_status: Literal["SEARCH_SUCCESS", "NO_RESULTS", "SEARCH_FAILED", "NOT_USED", "NOT_CONFIGURED"] = "NOT_USED"
+    source_quality: Literal["OFFICIAL", "TRUSTED", "UNKNOWN"] = "UNKNOWN"
+    source_conflict: bool = False
     claim_verdict_explanation: str = Field(default="", max_length=300)
     action_plan_steps: list[str] = Field(default_factory=list, max_length=5)
     lure_type: str = Field(default="غير محدد", max_length=160)
     authenticity_status: str = Field(default="UNKNOWN", max_length=80)
     citations: list[dict[str, str]] = Field(default_factory=list, max_length=10)
 
-    @field_validator("summary", "recommendation", "claimed_sender", "official_domain", "official_portal_url", "claim_verdict_explanation", "lure_type", "authenticity_status")
+    @field_validator("summary", "recommendation", "claimed_sender", "claimed_entity", "observed_url", "observed_host", "official_domain", "official_portal_url", "portal_source", "claim_verdict_explanation", "lure_type", "authenticity_status")
     @classmethod
     def clean_sms_scalar(cls, value: str) -> str:
         return _clean_text(value, 600)
 
-    @field_validator("reasons", "limitations", "action_plan_steps")
+    @field_validator("reasons", "limitations", "action_plan_steps", "impersonation_signals")
     @classmethod
     def clean_sms_lists(cls, values: list[str]) -> list[str]:
         return [_clean_text(item, 300) for item in values if _clean_text(item, 300)]
