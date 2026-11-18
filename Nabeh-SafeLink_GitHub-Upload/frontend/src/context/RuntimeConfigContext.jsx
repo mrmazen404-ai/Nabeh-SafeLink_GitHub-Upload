@@ -28,6 +28,17 @@ const SAFE_RUNTIME_CONFIG = Object.freeze({
   require_latest_terms: true,
 });
 
+function isConfigEqual(a, b) {
+  if (!a || !b) return a === b;
+  const keysA = Object.keys(a);
+  const keysB = Object.keys(b);
+  if (keysA.length !== keysB.length) return false;
+  for (const key of keysA) {
+    if (a[key] !== b[key]) return false;
+  }
+  return true;
+}
+
 export function RuntimeConfigProvider({ children }) {
   const [config, setConfig] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -38,11 +49,11 @@ export function RuntimeConfigProvider({ children }) {
     try {
       const response = await api.get('/public/runtime-config', { timeout: 12000 });
       if (!response.data?.success || !response.data?.data) throw new Error('Invalid runtime config response');
-      setConfig({ ...DEFAULT_RUNTIME_CONFIG, ...response.data.data });
+      const nextConfig = { ...DEFAULT_RUNTIME_CONFIG, ...response.data.data };
+      setConfig((previous) => (isConfigEqual(previous, nextConfig) ? previous : nextConfig));
       setLastError(false);
     } catch {
-      // Keep optional and sensitive features disabled without server policy, but do not force maintenance mode.
-      setConfig({ ...SAFE_RUNTIME_CONFIG });
+      setConfig((previous) => (isConfigEqual(previous, SAFE_RUNTIME_CONFIG) ? previous : SAFE_RUNTIME_CONFIG));
       setLastError(true);
     } finally {
       if (!quiet) setLoading(false);
@@ -51,7 +62,11 @@ export function RuntimeConfigProvider({ children }) {
 
   useEffect(() => {
     refresh();
-    const interval = window.setInterval(() => refresh({ quiet: true }), 30000);
+    const interval = window.setInterval(() => {
+      if (document.visibilityState === 'visible') {
+        refresh({ quiet: true });
+      }
+    }, 120000);
     return () => window.clearInterval(interval);
   }, [refresh]);
 

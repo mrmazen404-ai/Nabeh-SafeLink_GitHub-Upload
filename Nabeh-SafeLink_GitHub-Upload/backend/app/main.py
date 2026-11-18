@@ -77,8 +77,8 @@ app.include_router(scans_router, prefix="/api/v1/scans", tags=["Scans"])
 app.include_router(stats_router, prefix="/api/v1/statistics", tags=["Statistics"])
 app.include_router(dashboard_router, prefix="/api/v1/dashboard", tags=["Dashboard"])
 app.include_router(support_router, prefix="/api/v1/support", tags=["Support"])
-app.include_router(legal_router, prefix="/api/v1/legal", tags=["Legal"])
 app.include_router(terms_consent_router)
+app.include_router(legal_router, prefix="/api/v1/legal", tags=["Legal"])
 app.include_router(admin_router)
 app.include_router(admin_settings_router)
 app.include_router(public_router, prefix="/api/v1")
@@ -104,17 +104,27 @@ async def request_logging_middleware(request: Request, call_next):
         is_admin_path = path == "/api/v1/admin" or path.startswith("/api/v1/admin/")
         is_runtime_config = path == "/api/v1/public/runtime-config"
         is_health = path in {"/health", "/api/v1/health", "/ready", "/api/v1/ready"}
+        auth_first_path = (
+            path.startswith("/api/v1/dashboard")
+            or path == "/api/v1/scans/"
+            or path == "/api/v1/legal/terms-status"
+        )
         if path.startswith("/api/v1/") and not (is_admin_path or is_runtime_config or is_health):
             try:
                 maintenance_mode = await run_in_threadpool(
                     lambda: get_system_settings()["system.maintenance_mode"]
                 )
             except SystemSettingsUnavailable:
-                response = JSONResponse(
-                    status_code=503,
-                    content={"detail": "خدمة النظام غير متاحة مؤقتاً"},
-                    headers={"Cache-Control": "no-store"},
-                )
+                if auth_first_path and not request.headers.get("authorization"):
+                    # Let protected routes return their explicit 401 instead of
+                    # masking missing authentication with a settings outage.
+                    response = await call_next(request)
+                else:
+                    response = JSONResponse(
+                        status_code=503,
+                        content={"detail": "خدمة النظام غير متاحة مؤقتاً"},
+                        headers={"Cache-Control": "no-store"},
+                    )
             else:
                 if maintenance_mode:
                     response = JSONResponse(

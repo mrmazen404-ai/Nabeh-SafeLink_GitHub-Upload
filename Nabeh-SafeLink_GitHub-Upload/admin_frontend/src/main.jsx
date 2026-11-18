@@ -67,6 +67,8 @@ function Login({ onComplete, initialMessage = '' }) {
   const [stage, setStage] = useState('login');
   const [form, setForm] = useState({ email: '', password: '', code: '' });
   const [challenge, setChallenge] = useState('');
+  const [qrUri, setQrUri] = useState('');
+  const [secretKey, setSecretKey] = useState('');
   const [message, setMessage] = useState(initialMessage);
   const [busy, setBusy] = useState(false);
   const change = (e) => setForm({ ...form, [e.target.name]: e.target.value });
@@ -75,43 +77,88 @@ function Login({ onComplete, initialMessage = '' }) {
   async function login(e) {
     e.preventDefault(); setBusy(true); setMessage('');
     try {
-      const { data } = await api.post('/auth/login', { email: form.email, password: form.password });
-      if (data.status === '2FA_REQUIRED') { setChallenge(data.challenge_token); setStage('2fa'); }
-      else if (data.status === '2FA_SETUP_REQUIRED') { setChallenge(data.setup_token); setStage('setup'); }
-      else onComplete(data.data);
+      const cleanEmail = form.email.trim().toLowerCase();
+      const cleanPassword = form.password.trim();
+      const { data } = await api.post('/auth/login', { email: cleanEmail, password: cleanPassword });
+      if (data.status === '2FA_REQUIRED') {
+        setChallenge(data.challenge_token);
+        setStage('2fa');
+      } else if (data.status === '2FA_SETUP_REQUIRED') {
+        setChallenge(data.setup_token);
+        // Automatically fetch setup details (QR Code & Secret) in one step
+        try {
+          const setupRes = await api.post('/auth/2fa/setup', {}, { headers: { Authorization: `Bearer ${data.setup_token}` } });
+          setSecretKey(setupRes.data.data.secret);
+          setQrUri(setupRes.data.data.otpauth_uri);
+          setMessage('امسح رمز QR في تطبيق Google Authenticator ثم أدخل الرمز المكون من 6 أرقام:');
+          setStage('confirm');
+        } catch {
+          setStage('setup');
+        }
+      } else {
+        onComplete(data.data);
+      }
     } catch (error) { setMessage(error.response?.data?.detail || 'تعذر تسجيل الدخول'); }
     finally { setBusy(false); }
   }
+
   async function verify2fa(e) {
     e.preventDefault(); setBusy(true); setMessage('');
-    try { const { data } = await api.post('/auth/2fa/verify', { code: form.code }, { headers: { Authorization: `Bearer ${challenge}` } }); onComplete(data.data); }
-    catch (error) { setMessage(error.response?.data?.detail || 'رمز التحقق غير صحيح'); }
+    try {
+      const { data } = await api.post('/auth/2fa/verify', { code: form.code.trim() }, { headers: { Authorization: `Bearer ${challenge}` } });
+      onComplete(data.data);
+    } catch (error) { setMessage(error.response?.data?.detail || 'رمز التحقق غير صحيح'); }
     finally { setBusy(false); }
   }
+
   async function setup2fa(e) {
     e.preventDefault(); setBusy(true); setMessage('');
-    try { const { data } = await api.post('/auth/2fa/setup', {}, { headers: { Authorization: `Bearer ${challenge}` } }); setMessage(`امسح QR في Google Authenticator. السر المؤقت: ${data.data.secret}`); setStage('confirm'); }
-    catch (error) { setMessage(error.response?.data?.detail || 'تعذر بدء إعداد 2FA'); }
+    try {
+      const { data } = await api.post('/auth/2fa/setup', {}, { headers: { Authorization: `Bearer ${challenge}` } });
+      setSecretKey(data.data.secret);
+      setQrUri(data.data.otpauth_uri);
+      setMessage('امسح رمز QR في تطبيق Google Authenticator ثم أدخل الرمز المكون من 6 أرقام:');
+      setStage('confirm');
+    } catch (error) { setMessage(error.response?.data?.detail || 'تعذر بدء إعداد 2FA'); }
     finally { setBusy(false); }
   }
+
   async function confirm2fa(e) {
     e.preventDefault(); setBusy(true); setMessage('');
-    try { await api.post('/auth/2fa/confirm', { code: form.code }, { headers: { Authorization: `Bearer ${challenge}` } }); setMessage('تم تفعيل 2FA. سجّل الدخول مرة أخرى.'); setStage('login'); }
-    catch (error) { setMessage(error.response?.data?.detail || 'رمز التحقق غير صحيح'); }
+    try {
+      await api.post('/auth/2fa/confirm', { code: form.code.trim() }, { headers: { Authorization: `Bearer ${challenge}` } });
+      setMessage('تم تفعيل المصادقة الثنائية بنجاح! سجّل الدخول الآن بالرمز المتغير الجديد.');
+      setForm({ ...form, code: '' });
+      setStage('login');
+    } catch (error) { setMessage(error.response?.data?.detail || 'رمز التحقق غير صحيح'); }
     finally { setBusy(false); }
   }
 
   return <main className="auth-page"><section className="auth-card">
     <div className="brand"><span className="brand-mark">N</span><div><small>Nabeh SafeLink</small><h1>Admin Control</h1></div></div>
     <div className="eyebrow">منطقة الإدارة المحمية</div>
-    <h2>{stage === 'login' ? 'تسجيل دخول المسؤول' : stage === 'setup' ? 'إعداد المصادقة الثنائية' : 'التحقق من الهوية'}</h2>
-    <p className="muted">هذه المنطقة مخصصة لمسؤولي Nabeh SafeLink فقط.</p>
+    <h2>{stage === 'login' ? 'تسجيل دخول المسؤول' : (stage === 'setup' || stage === 'confirm') ? 'إعداد المصادقة الثنائية (2FA)' : 'التحقق من الهوية'}</h2>
+    <p className="muted">{stage === '2fa' ? 'أدخل الرمز المتغير المكون من 6 أرقام من تطبيق Google Authenticator:' : 'هذه المنطقة مخصصة لمسؤولي Nabeh SafeLink فقط.'}</p>
+
+    {qrUri && (stage === 'confirm' || stage === 'setup') && (
+      <div style={{ textAlign: 'center', margin: '16px 0', padding: '16px', background: '#ffffff', borderRadius: '12px', border: '1px solid #e5e7eb', boxShadow: '0 2px 10px rgba(0,0,0,0.06)' }}>
+        <img
+          src={`https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(qrUri)}`}
+          alt="2FA QR Code"
+          style={{ width: '190px', height: '190px', margin: '0 auto 12px auto', display: 'block', border: '1px solid #e5e7eb', borderRadius: '8px', padding: '6px' }}
+        />
+        <div style={{ fontSize: '13px', color: '#374151', fontWeight: 'bold' }}>
+          الرمز اليدوي (Secret): <code style={{ background: '#f3f4f6', color: '#1d4ed8', padding: '4px 8px', borderRadius: '6px', fontSize: '14px', letterSpacing: '1px' }}>{secretKey}</code>
+        </div>
+      </div>
+    )}
+
     <form onSubmit={submit}>
       {stage === 'login' && <><label>البريد الإلكتروني<input name="email" type="email" autoComplete="username" value={form.email} onChange={change} required /></label><label>كلمة المرور<input name="password" type="password" autoComplete="current-password" value={form.password} onChange={change} required minLength="12" /></label></>}
-      {stage !== 'login' && <label>رمز Authenticator<input name="code" inputMode="numeric" autoComplete="one-time-code" value={form.code} onChange={change} required minLength="6" maxLength="8" /></label>}
-      <button className="primary" disabled={busy}>{busy ? 'جارٍ التحقق...' : stage === 'login' ? 'دخول آمن' : stage === 'setup' ? 'بدء إعداد 2FA' : 'تأكيد الهوية'}</button>
+      {stage !== 'login' && stage !== 'setup' && <label>رمز Authenticator المكون من 6 أرقام<input name="code" inputMode="numeric" autoComplete="one-time-code" value={form.code} onChange={change} required minLength="6" maxLength="8" placeholder="123456" /></label>}
+      <button className="primary" disabled={busy}>{busy ? 'جارٍ التحقق...' : stage === 'login' ? 'دخول آمن' : stage === 'setup' ? 'إنشاء رمز QR' : 'تأكيد وتفعيل 2FA'}</button>
     </form>
-    {message && <div className="notice">{message}</div>}
+    {message && <div className="notice" style={{ marginTop: '12px' }}>{message}</div>}
     <div className="auth-foot"><span className="status-dot" /> الاتصال الإداري مشفر ومراقب</div>
   </section></main>;
 }

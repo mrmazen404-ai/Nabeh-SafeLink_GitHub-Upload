@@ -6,7 +6,8 @@ import api from '../services/api';
 import { getAccessToken } from '../services/authToken';
 import { useAuth } from '../context/AuthContext';
 import { useLanguage } from '../context/LanguageContext';
-import { AlertTriangleIcon, BarChartIcon, CheckCircleIcon, ClipboardIcon, InfoIcon, MailIcon, SearchIcon, ShieldCheckIcon, UserIcon } from '../components/Icons';
+import { AlertTriangleIcon, BarChartIcon, CheckCircleIcon, ClipboardIcon, InfoIcon, LockIcon, MailIcon, SearchIcon, ShieldCheckIcon, ShieldIcon, UserIcon } from '../components/Icons';
+import { UnifiedLoadingGate } from '../components/SessionCheckScreen';
 import './dashboard.css';
 
 const EMPTY_STATS = { total: 0, safe: 0, suspicious: 0, dangerous: 0, unknown: 0 };
@@ -48,6 +49,7 @@ export default function Dashboard({ activeTab, setActiveTab, onNavigateAuth }) {
   const [passwordForm, setPasswordForm] = useState({ current_password: '', new_password: '', confirm_password: '' });
   const [profile, setProfile] = useState({ display_name: '', preferred_language: 'ar', timezone: '' });
   const [active, setActive] = useState(() => normalizeDashboardSection(searchParams.get('section')));
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [refreshingLive, setRefreshingLive] = useState(false);
@@ -58,6 +60,25 @@ export default function Dashboard({ activeTab, setActiveTab, onNavigateAuth }) {
   const load = useCallback(async () => {
     setLoading(true);
     try {
+      try {
+        const bootstrapRes = await api.get('/dashboard/bootstrap', authConfig());
+        const b = bootstrapRes.data?.data;
+        if (b) {
+          setOverview(b.overview || null);
+          setScans(Array.isArray(b.scans) ? b.scans : []);
+          setProfile(b.profile || {});
+          setNotifications(Array.isArray(b.notifications) ? b.notifications : []);
+          setPreferences(b.preferences || null);
+          setConsents(Array.isArray(b.consents) ? b.consents : []);
+          setSecurityActivity(Array.isArray(b.security_activity) ? b.security_activity : []);
+          setLiveStats(b.live_stats || null);
+          setActivities(Array.isArray(b.activities) ? b.activities : []);
+          return;
+        }
+      } catch {
+        // Fallback to individual calls if bootstrap fails
+      }
+
       const [overviewRes, scansRes, profileRes, notificationsRes, preferencesRes, consentRes, activityRes, liveRes, feedRes] = await Promise.all([
         api.get('/dashboard/overview', authConfig()),
         api.get('/scans/', authConfig()),
@@ -99,9 +120,13 @@ export default function Dashboard({ activeTab, setActiveTab, onNavigateAuth }) {
     setActive(normalizeDashboardSection(searchParams.get('section')));
   }, [searchParams]);
   useEffect(() => {
-    const timer = window.setInterval(() => { refreshLive().catch(() => undefined); }, 20000);
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === 'visible' && realtimeStatus !== 'connected') {
+        refreshLive().catch(() => undefined);
+      }
+    }, 30000);
     return () => window.clearInterval(timer);
-  }, [refreshLive]);
+  }, [refreshLive, realtimeStatus]);
 
   useEffect(() => {
     const token = getAccessToken();
@@ -287,16 +312,29 @@ export default function Dashboard({ activeTab, setActiveTab, onNavigateAuth }) {
 
   if (loading) {
     return (
-      <main className="welcome-page dashboard-page" dir={dir} aria-busy="true">
-        <Header activeTab={activeTab} setActiveTab={setActiveTab} onNavigateAuth={onNavigateAuth} />
-        <div className="dashboard-loading" role="status" aria-live="polite">
-          <span className="dashboard-loading-spinner" aria-hidden="true" />
-          <span>{t('dashboard.loading')}</span>
-        </div>
-        <Footer />
-      </main>
+      <UnifiedLoadingGate
+        badgeText={lang === 'ar' ? 'تجهيز مساحة العمل' : 'Workspace Initialization'}
+        title={lang === 'ar' ? 'جارِ تحميل لوحة التحكم' : 'Loading Workspace Dashboard'}
+        subtitle={lang === 'ar' ? 'مزامنة السجلات والإحصائيات وتأمين الاتصال' : 'Synchronizing audit logs, metrics & security'}
+        statusText={lang === 'ar' ? 'تجميع بيانات الحساب والفحوصات...' : 'Aggregating account data & scans...'}
+        progress={65}
+      />
     );
   }
+
+  const navItems = [
+    ['overview', t('dashboard.tabs.overview'), <BarChartIcon size={18} />],
+    ['history', t('dashboard.tabs.history'), <ClipboardIcon size={18} />],
+    ['profile', t('dashboard.tabs.profile'), <UserIcon size={18} />],
+    ['security', t('dashboard.tabs.security'), <LockIcon size={18} />],
+    [
+      'notifications',
+      t('dashboard.tabs.notifications'),
+      <MailIcon size={18} />,
+      notifications.some((n) => !n.is_read) ? (lang === 'ar' ? 'جديد' : 'New') : null,
+    ],
+    ['privacy', t('dashboard.tabs.privacy'), <ShieldIcon size={18} />],
+  ];
 
   return (
     <main className="welcome-page dashboard-page" dir={dir}>
@@ -305,62 +343,112 @@ export default function Dashboard({ activeTab, setActiveTab, onNavigateAuth }) {
 
       <Header activeTab={activeTab} setActiveTab={setActiveTab} onNavigateAuth={onNavigateAuth} />
 
-      <div className="dashboard-content">
-        <div className="welcome-graduation" style={{ marginBottom: '32px' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '20px' }}>
-            <div>
-              <span className="welcome-eyebrow"><span className="welcome-eyebrow-dot" />Nabeh SafeLink</span>
-              <h1 style={{ fontFamily: 'Poppins, Cairo, sans-serif', fontSize: 'clamp(26px, 3.5vw, 42px)', fontWeight: 800, color: 'var(--color-primary)', margin: '8px 0 6px' }}>
-                {lang === 'ar' ? `مرحباً، ${displayName}` : `Welcome, ${displayName}`}
-              </h1>
-              <p style={{ color: 'var(--color-text-secondary)', fontSize: '15px', margin: 0 }}>
-                {lang === 'ar' ? 'كل ما تحتاجه لمراقبة أمان روابطك وحسابك في مكان واحد.' : 'Everything you need to monitor link & account security in one workspace.'}
-              </p>
-            </div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-              <span style={{ padding: '8px 16px', background: 'var(--color-secondary-subtle)', borderRadius: '10px', fontSize: '13px', fontWeight: 700, color: 'var(--color-secondary)' }}>
-                {overview?.user?.role === 'USER' ? (lang === 'ar' ? 'مستخدم مسجل' : 'Registered User') : overview?.user?.role || (lang === 'ar' ? 'مستخدم' : 'User')}
-              </span>
-              <button type="button" className="welcome-secondary-button" onClick={logout}>
-                {t('auth.logout')}
-              </button>
-            </div>
-          </div>
+      <div className="dashboard-layout-wrapper">
+        {/* Mobile Navbar Bar */}
+        <div className="dashboard-mobile-bar">
+          <button
+            type="button"
+            className="dashboard-mobile-toggle"
+            onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
+            aria-label={lang === 'ar' ? 'القائمة الجانبية' : 'Toggle navigation menu'}
+          >
+            <span style={{ fontSize: '18px' }}>☰</span>
+            <span>{navItems.find(([k]) => k === active)?.[1] || (lang === 'ar' ? 'القائمة' : 'Menu')}</span>
+          </button>
+          <span className={`dashboard-realtime-status status-${realtimeStatus}`}>
+            <span className="welcome-status-dot" aria-hidden="true" /> {realtimeStatusText}
+          </span>
         </div>
 
-        {message && (
-          <div className="dashboard-feedback" role="status" aria-live="polite" aria-atomic="true">
-            <span className="dashboard-feedback-mark" aria-hidden="true" />
-            <p>{message}</p>
-          </div>
-        )}
+        {/* Sidebar Navigation */}
+        <aside className={`dashboard-sidebar ${mobileMenuOpen ? 'is-open' : ''}`}>
+          <div className="dashboard-sidebar-header">
+            <div className="dashboard-sidebar-user">
+              <div className="dashboard-user-avatar">
+                {displayName.charAt(0).toUpperCase()}
+              </div>
+              <div className="dashboard-user-info">
+                <strong>{displayName}</strong>
+                <span className="dashboard-user-role">
+                  {overview?.user?.role === 'USER' ? (lang === 'ar' ? 'مستخدم مسجل' : 'Registered User') : overview?.user?.role || (lang === 'ar' ? 'مستخدم' : 'User')}
+                </span>
+              </div>
+            </div>
 
-        {/* Navigation Tabs */}
-        <div className="dashboard-tabs-wrap">
-          <div className="dashboard-tabs" role="group" aria-label={lang === 'ar' ? 'أقسام لوحة التحكم' : 'Dashboard sections'}>
-            {[
-              ['overview', t('dashboard.tabs.overview')],
-              ['history', t('dashboard.tabs.history')],
-              ['profile', t('dashboard.tabs.profile')],
-              ['security', t('dashboard.tabs.security')],
-              ['notifications', `${t('dashboard.tabs.notifications')}${notifications.some((n) => !n.is_read) ? ' •' : ''}`],
-              ['privacy', t('dashboard.tabs.privacy')]
-            ].map(([key, label]) => (
+            <div className="dashboard-sidebar-connection">
+              <span className={`welcome-status-dot status-${realtimeStatus}`} aria-hidden="true" />
+              <span>{realtimeStatusText}</span>
+            </div>
+          </div>
+
+          <nav className="dashboard-sidebar-nav" aria-label={lang === 'ar' ? 'أقسام لوحة التحكم' : 'Dashboard sections'}>
+            <div className="dashboard-nav-group-label">
+              {lang === 'ar' ? 'أقسام اللوحة' : 'DASHBOARD SECTIONS'}
+            </div>
+            {navItems.map(([key, label, icon, badge]) => (
               <button
                 key={key}
                 type="button"
-                onClick={() => selectSection(key)}
-                className={`dashboard-tab ${active === key ? 'is-active welcome-primary-button' : 'welcome-secondary-button'}`}
-                aria-pressed={active === key}
+                onClick={() => { selectSection(key); setMobileMenuOpen(false); }}
+                className={`dashboard-sidebar-item ${active === key ? 'is-active' : ''}`}
               >
-                {label}
+                <span className="sidebar-item-icon">{icon}</span>
+                <span className="sidebar-item-label">{label}</span>
+                {badge && <span className="sidebar-item-badge">{badge}</span>}
               </button>
             ))}
+          </nav>
+
+          <div className="dashboard-sidebar-footer">
+            <button
+              type="button"
+              className="dashboard-sidebar-action-btn welcome-primary-button"
+              onClick={() => { navigate('/scan'); setMobileMenuOpen(false); }}
+            >
+              <SearchIcon size={16} />
+              <span>{t('home.startScanBtn')}</span>
+            </button>
+            <button
+              type="button"
+              className="dashboard-sidebar-logout-btn welcome-secondary-button"
+              onClick={logout}
+            >
+              {t('auth.logout')}
+            </button>
           </div>
-          <span className="dashboard-tabs-hint">
-            {lang === 'ar' ? 'مرّر أفقياً للتنقل بين الأقسام' : 'Scroll horizontally to explore sections'}
-          </span>
-        </div>
+        </aside>
+
+        {/* Mobile Backdrop */}
+        {mobileMenuOpen && (
+          <div
+            className="dashboard-mobile-overlay"
+            onClick={() => setMobileMenuOpen(false)}
+            aria-hidden="true"
+          />
+        )}
+
+        {/* Main Content Area */}
+        <div className="dashboard-main-area">
+          <div className="welcome-graduation" style={{ marginBottom: '24px' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '16px' }}>
+              <div>
+                <span className="welcome-eyebrow"><span className="welcome-eyebrow-dot" />Nabeh SafeLink</span>
+                <h1 style={{ fontFamily: 'Poppins, Cairo, sans-serif', fontSize: 'clamp(24px, 3vw, 36px)', fontWeight: 800, color: 'var(--color-primary)', margin: '6px 0 4px' }}>
+                  {lang === 'ar' ? `مرحباً، ${displayName}` : `Welcome, ${displayName}`}
+                </h1>
+                <p style={{ color: 'var(--color-text-secondary)', fontSize: '14px', margin: 0 }}>
+                  {lang === 'ar' ? 'كل ما تحتاجه لمراقبة أمان روابطك وحسابك في مكان واحد.' : 'Everything you need to monitor link & account security in one workspace.'}
+                </p>
+              </div>
+            </div>
+          </div>
+
+          {message && (
+            <div className="dashboard-feedback" role="status" aria-live="polite" aria-atomic="true">
+              <span className="dashboard-feedback-mark" aria-hidden="true" />
+              <p>{message}</p>
+            </div>
+          )}
 
         {active === 'overview' && (
           <>
@@ -370,6 +458,8 @@ export default function Dashboard({ activeTab, setActiveTab, onNavigateAuth }) {
               <StatCard icon={<InfoIcon />} label={t('dashboard.overview.suspiciousScans')} value={stats.suspicious} tone="amber" />
               <StatCard icon={<AlertTriangleIcon />} label={t('dashboard.overview.dangerousScans')} value={stats.dangerous} tone="red" />
             </div>
+
+            <ScanDistributionChart stats={stats} lang={lang} t={t} />
 
             <div className="welcome-graduation" style={{ marginBottom: '32px' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
@@ -503,7 +593,7 @@ export default function Dashboard({ activeTab, setActiveTab, onNavigateAuth }) {
                 {t('home.startScanBtn')}
               </button>
             </div>
-            <ScanTable scans={scans} onSelect={(scan) => navigate(`/scan-details/${encodeURIComponent(scan.id)}`)} emptyText={t('history.emptyState')} t={t} lang={lang} />
+            <ScanTable scans={scans} onSelect={(scan) => navigate(`/scan-details/${encodeURIComponent(scan.id)}`)} emptyText={t('history.emptyState')} t={t} lang={lang} showFilters={true} />
           </div>
         )}
 
@@ -712,6 +802,7 @@ export default function Dashboard({ activeTab, setActiveTab, onNavigateAuth }) {
             </div>
           </div>
         )}
+        </div>
       </div>
 
       <Footer />
@@ -787,32 +878,215 @@ function ActivityFeed({ activities, lang, t }) {
   );
 }
 
-function ScanTable({ scans, onSelect, emptyText, t, lang }) {
-  if (!scans?.length) return <Empty text={emptyText || 'No data.'} t={t} />;
+function ScanDistributionChart({ stats, lang }) {
+  const total = stats.total || 0;
+  const safe = stats.safe || 0;
+  const suspicious = stats.suspicious || 0;
+  const dangerous = stats.dangerous || 0;
+  const unknown = stats.unknown || 0;
+
+  const safePct = total ? Math.round((safe / total) * 100) : 0;
+  const suspiciousPct = total ? Math.round((suspicious / total) * 100) : 0;
+  const dangerousPct = total ? Math.round((dangerous / total) * 100) : 0;
+  const unknownPct = total ? Math.round((unknown / total) * 100) : 0;
+
+  const items = [
+    { label: lang === 'ar' ? 'آمن' : 'Safe', count: safe, pct: safePct, color: '#16A34A', bg: 'var(--color-success-bg)' },
+    { label: lang === 'ar' ? 'مشبوه' : 'Suspicious', count: suspicious, pct: suspiciousPct, color: '#D97706', bg: 'var(--color-warning-bg)' },
+    { label: lang === 'ar' ? 'خطر' : 'Dangerous', count: dangerous, pct: dangerousPct, color: '#DC2626', bg: 'var(--color-danger-bg)' },
+    { label: lang === 'ar' ? 'غير محسوم' : 'Unknown', count: unknown, pct: unknownPct, color: '#6B7280', bg: 'var(--color-bg-subtle)' },
+  ];
+
   return (
-    <div className="scan-table">
-      {scans.map((scan) => (
-        <button
-          type="button"
-          key={scan.id}
-          onClick={() => onSelect?.(scan)}
-          className="scan-row"
-          style={{ textAlign: lang === 'ar' ? 'right' : 'left' }}
-        >
-          <span className="result-tag scan-kind" style={{ fontSize: '10px', padding: '4px 10px', background: 'var(--color-secondary-subtle)', color: 'var(--color-secondary)' }}>
-            {scan.input_type === 'MESSAGE' ? (lang === 'ar' ? 'رسالة' : 'Text') : (lang === 'ar' ? 'رابط' : 'URL')}
-          </span>
-          <span className="scan-value">
-            {scan.input_value_masked || '••••'}
-          </span>
-          <ClassificationBadge value={scan.classification} t={t} className="scan-classification" />
-          <time>{formatDate(scan.created_at, lang)}</time>
-        </button>
-      ))}
+    <div className="welcome-graduation" style={{ marginBottom: '32px' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px', flexWrap: 'wrap', gap: '10px' }}>
+        <div>
+          <span className="welcome-section-label">{lang === 'ar' ? 'تمثيل بصري تفاعلي' : 'Visual Analytics'}</span>
+          <h2 style={{ margin: 0 }}>{lang === 'ar' ? 'توزيع نتائج الفحوصات' : 'Scan Risk Breakdown'}</h2>
+        </div>
+        <span style={{ fontSize: '12px', color: 'var(--color-text-muted)', fontWeight: 600 }}>
+          {lang === 'ar' ? `الإجمالي: ${total} فحص` : `Total: ${total} scans`}
+        </span>
+      </div>
+
+      {total > 0 ? (
+        <>
+          <div style={{ display: 'flex', height: '14px', borderRadius: '10px', overflow: 'hidden', background: 'var(--color-bg-subtle)', marginBottom: '20px', gap: '2px' }}>
+            {safePct > 0 && <div style={{ width: `${safePct}%`, background: '#16A34A', transition: 'width 0.4s ease' }} title={`Safe: ${safe} (${safePct}%)`} />}
+            {suspiciousPct > 0 && <div style={{ width: `${suspiciousPct}%`, background: '#D97706', transition: 'width 0.4s ease' }} title={`Suspicious: ${suspicious} (${suspiciousPct}%)`} />}
+            {dangerousPct > 0 && <div style={{ width: `${dangerousPct}%`, background: '#DC2626', transition: 'width 0.4s ease' }} title={`Dangerous: ${dangerous} (${dangerousPct}%)`} />}
+            {unknownPct > 0 && <div style={{ width: `${unknownPct}%`, background: '#6B7280', transition: 'width 0.4s ease' }} title={`Unknown: ${unknown} (${unknownPct}%)`} />}
+          </div>
+
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: '12px' }}>
+            {items.map((item) => (
+              <div key={item.label} style={{ padding: '14px 16px', background: item.bg, borderRadius: '12px', border: `1px solid ${item.color}33`, display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                  <span style={{ width: '8px', height: '8px', borderRadius: '50%', background: item.color }} />
+                  <span style={{ fontSize: '12px', fontWeight: 700, color: item.color }}>{item.label}</span>
+                </div>
+                <strong style={{ fontSize: '20px', fontWeight: 800, color: 'var(--color-primary)', fontFamily: 'Poppins, sans-serif' }}>{item.count}</strong>
+                <span style={{ fontSize: '11px', color: 'var(--color-text-secondary)' }}>{item.pct}% {lang === 'ar' ? 'من الإجمالي' : 'of total'}</span>
+              </div>
+            ))}
+          </div>
+        </>
+      ) : (
+        <div style={{ textAlign: 'center', padding: '24px', color: 'var(--color-text-muted)', fontSize: '13px' }}>
+          {lang === 'ar' ? 'لا توجد بيانات فحوصات لعرض المخطط البياني حالياً.' : 'No scan data available for visualization yet.'}
+        </div>
+      )}
     </div>
   );
 }
 
+function ScanTable({ scans, onSelect, emptyText, t, lang, showFilters = false }) {
+  const [filterClass, setFilterClass] = useState('ALL');
+  const [filterType, setFilterType] = useState('ALL');
+  const [search, setSearch] = useState('');
+
+  if (!scans?.length) return <Empty text={emptyText || (lang === 'ar' ? 'لا توجد بيانات فحوصات' : 'No scan data.')} t={t} />;
+
+  const filtered = scans.filter((scan) => {
+    if (filterClass !== 'ALL' && (scan.classification || 'UNKNOWN').toUpperCase() !== filterClass) return false;
+    if (filterType !== 'ALL' && (scan.input_type || 'URL').toUpperCase() !== filterType) return false;
+    if (search.trim()) {
+      const q = search.trim().toLowerCase();
+      const val = (scan.input_value_masked || '').toLowerCase();
+      if (!val.includes(q)) return false;
+    }
+    return true;
+  });
+
+  return (
+    <div>
+      {showFilters && (
+        <div style={{ marginBottom: '20px', display: 'grid', gap: '12px' }}>
+          <div style={{ position: 'relative' }}>
+            <input
+              type="text"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder={lang === 'ar' ? 'ابحث عن رابط أو نص مفحوص...' : 'Search by URL or text...'}
+              style={{
+                width: '100%',
+                padding: '12px 16px',
+                paddingInlineStart: '40px',
+                borderRadius: '12px',
+                border: '1px solid var(--color-border-strong)',
+                background: 'var(--color-bg)',
+                color: 'var(--color-text)',
+                font: 'inherit',
+                fontSize: '13px',
+              }}
+            />
+            <span style={{ position: 'absolute', top: '50%', transform: 'translateY(-50%)', [lang === 'ar' ? 'right' : 'left']: '14px', color: 'var(--color-text-muted)', display: 'grid', placeItems: 'center' }}>
+              <SearchIcon size={18} />
+            </span>
+          </div>
+
+          <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center' }}>
+            <span style={{ fontSize: '12px', fontWeight: 700, color: 'var(--color-text-secondary)', marginInlineEnd: '4px' }}>
+              {lang === 'ar' ? 'التصنيف:' : 'Category:'}
+            </span>
+            {[
+              ['ALL', lang === 'ar' ? 'الكل' : 'All'],
+              ['DANGEROUS', lang === 'ar' ? 'خطر' : 'Dangerous'],
+              ['SUSPICIOUS', lang === 'ar' ? 'مشبوه' : 'Suspicious'],
+              ['SAFE', lang === 'ar' ? 'آمن' : 'Safe'],
+              ['UNKNOWN', lang === 'ar' ? 'غير محسوم' : 'Unknown'],
+            ].map(([code, label]) => (
+              <button
+                key={code}
+                type="button"
+                onClick={() => setFilterClass(code)}
+                style={{
+                  padding: '6px 14px',
+                  borderRadius: '8px',
+                  fontSize: '12px',
+                  fontWeight: 700,
+                  border: '1px solid',
+                  borderColor: filterClass === code ? 'var(--color-primary)' : 'var(--color-border)',
+                  background: filterClass === code ? 'var(--color-primary)' : 'var(--color-bg)',
+                  color: filterClass === code ? '#FFFFFF' : 'var(--color-text-secondary)',
+                  cursor: 'pointer',
+                  transition: 'all 0.15s ease',
+                }}
+              >
+                {label}
+              </button>
+            ))}
+
+            <span style={{ fontSize: '12px', fontWeight: 700, color: 'var(--color-text-secondary)', marginInlineStart: '12px', marginInlineEnd: '4px' }}>
+              {lang === 'ar' ? 'النوع:' : 'Type:'}
+            </span>
+            {[
+              ['ALL', lang === 'ar' ? 'الكل' : 'All'],
+              ['URL', lang === 'ar' ? 'روابط' : 'URLs'],
+              ['MESSAGE', lang === 'ar' ? 'رسائل' : 'SMS'],
+            ].map(([code, label]) => (
+              <button
+                key={code}
+                type="button"
+                onClick={() => setFilterType(code)}
+                style={{
+                  padding: '6px 14px',
+                  borderRadius: '8px',
+                  fontSize: '12px',
+                  fontWeight: 700,
+                  border: '1px solid',
+                  borderColor: filterType === code ? 'var(--color-secondary)' : 'var(--color-border)',
+                  background: filterType === code ? 'var(--color-secondary-subtle)' : 'var(--color-bg)',
+                  color: filterType === code ? 'var(--color-secondary)' : 'var(--color-text-secondary)',
+                  cursor: 'pointer',
+                  transition: 'all 0.15s ease',
+                }}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {filtered.length ? (
+        <div className="scan-table">
+          {filtered.map((scan) => (
+            <button
+              type="button"
+              key={scan.id}
+              onClick={() => onSelect?.(scan)}
+              className="scan-row"
+              style={{ textAlign: lang === 'ar' ? 'right' : 'left' }}
+            >
+              <span className="result-tag scan-kind" style={{ fontSize: '10px', padding: '4px 10px', background: 'var(--color-secondary-subtle)', color: 'var(--color-secondary)' }}>
+                {scan.input_type === 'MESSAGE' ? (lang === 'ar' ? 'رسالة' : 'Text') : (lang === 'ar' ? 'رابط' : 'URL')}
+              </span>
+              <span className="scan-value">
+                {scan.input_value_masked || '••••'}
+              </span>
+              <ClassificationBadge value={scan.classification} t={t} className="scan-classification" />
+              <time>{formatDate(scan.created_at, lang)}</time>
+            </button>
+          ))}
+        </div>
+      ) : (
+        <div style={{ textAlign: 'center', padding: '32px 16px', background: 'var(--color-bg-subtle)', borderRadius: '14px', border: '1px solid var(--color-border)' }}>
+          <p style={{ margin: '0 0 12px 0', fontSize: '13px', color: 'var(--color-text-secondary)', fontWeight: 600 }}>
+            {lang === 'ar' ? 'لا توجد نتائج تطابق خيارات الفلترة أو البحث الحالية.' : 'No scans match the selected filter or search options.'}
+          </p>
+          <button
+            type="button"
+            className="welcome-secondary-button"
+            onClick={() => { setFilterClass('ALL'); setFilterType('ALL'); setSearch(''); }}
+          >
+            {lang === 'ar' ? 'إعادة ضبط الفلاتر' : 'Reset Filters'}
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
 function Empty({ text, action, t }) {
   return (
     <div className="dashboard-empty" aria-live="polite" aria-atomic="true">

@@ -4,7 +4,7 @@ import { useTheme } from '../context/ThemeContext';
 import { useAuth } from '../context/AuthContext';
 import './session-check.css';
 
-function SecurityShield({ theme }) {
+export function SecurityShield({ theme }) {
   const isDark = theme === 'dark';
 
   return (
@@ -49,9 +49,85 @@ function SecurityShield({ theme }) {
   );
 }
 
-export default function SessionCheckScreen({ onComplete }) {
-  const { dir, t, lang } = useLanguage();
+export function UnifiedLoadingGate({
+  badgeText,
+  title,
+  subtitle,
+  statusText,
+  progress = 50,
+  showProgress = true,
+  isError = false,
+  scanUrl,
+  scanType,
+  onCancel,
+  children,
+}) {
+  const { dir, lang } = useLanguage();
   const { theme } = useTheme();
+
+  const isArabic = lang === 'ar';
+  const defaultBadge = isArabic ? 'توثيق نابه الآمن' : 'Nabeh Secure Verification';
+  const defaultTitle = isArabic ? 'جارِ تأمين الجلسة' : 'Securing Session';
+  const defaultSubtitle = isArabic ? 'يتم التحقق من هوية الجلسة وتطبيق سياسات الحماية' : 'Verifying session identity & enforcing protection policies';
+  const defaultStatus = isArabic ? 'اتصال مشفر • تحقق متعدد الطبقات' : 'Encrypted Connection • Multi-layer Verification';
+
+  const badge = badgeText || defaultBadge;
+  const mainTitle = title || defaultTitle;
+  const mainSubtitle = subtitle || defaultSubtitle;
+  const currentStatusText = statusText || defaultStatus;
+
+  return (
+    <main className="session-check-screen" data-theme={theme} dir={dir} role="status" aria-live="polite" aria-busy="true">
+      <div className="session-grid" />
+      <div className="session-check-card">
+        <span className="session-security-label">
+          <i style={{ background: isError ? 'var(--color-danger, #ef4444)' : undefined }} /> {badge}
+        </span>
+        <SecurityShield theme={theme} />
+        <h1>{mainTitle}</h1>
+        <p>{mainSubtitle}</p>
+
+        {scanUrl && (
+          <div className="loading-url-box" style={{ marginTop: '16px', padding: '10px 14px', borderRadius: '12px', background: 'var(--color-bg-subtle)', border: '1px solid var(--color-border)', fontSize: '13px', textAlign: 'center' }}>
+            <span style={{ fontWeight: 700, color: 'var(--color-text-secondary)', display: 'block', marginBottom: '2px' }}>
+              {scanType === 'TEXT' ? (isArabic ? 'نص الرسالة:' : 'Message Text:') : (isArabic ? 'الرابط المفحوص:' : 'Inspected URL:')}
+            </span>
+            <span dir="auto" style={{ wordBreak: 'break-all', color: 'var(--color-primary)', fontWeight: 600 }}>
+              {scanUrl}
+            </span>
+          </div>
+        )}
+
+        {showProgress && (
+          <div className="session-progress">
+            <span style={{ width: `${Math.min(100, Math.max(0, progress))}%`, background: isError ? 'var(--color-danger, #ef4444)' : undefined }} />
+          </div>
+        )}
+
+        <div className="session-status">
+          <span className="session-status-dot" style={{ background: isError ? 'var(--color-danger, #ef4444)' : undefined }} />
+          <span>{`${currentStatusText} (${Math.round(Math.min(100, Math.max(0, progress)))}%)`}</span>
+        </div>
+
+        {onCancel && (
+          <button
+            type="button"
+            className="welcome-secondary-button"
+            onClick={onCancel}
+            style={{ marginTop: '16px', fontSize: '12px', padding: '6px 16px' }}
+          >
+            {isArabic ? 'إلغاء العملية' : 'Cancel Operation'}
+          </button>
+        )}
+
+        {children}
+      </div>
+    </main>
+  );
+}
+
+export default function SessionCheckScreen({ onComplete }) {
+  const { lang } = useLanguage();
   const auth = useAuth() || {};
   const { checkAuth, user, token } = auth;
 
@@ -65,7 +141,6 @@ export default function SessionCheckScreen({ onComplete }) {
 
     async function runSessionCheckPipeline() {
       try {
-        // Step 1: Check Token & Connection Encryption
         if (isMounted) {
           setProgress(25);
           setCurrentStepText(
@@ -74,9 +149,8 @@ export default function SessionCheckScreen({ onComplete }) {
               : 'Encrypting connection & checking local session token...'
           );
         }
-        await new Promise((resolve) => setTimeout(resolve, 250));
+        await new Promise((resolve) => setTimeout(resolve, 60));
 
-        // Step 2: Validate Credentials & Identity with Backend
         if (isMounted) {
           setProgress(55);
           setCurrentStepText(
@@ -87,7 +161,7 @@ export default function SessionCheckScreen({ onComplete }) {
         }
 
         let verifiedUser = user;
-        if (token && typeof checkAuth === 'function') {
+        if (!verifiedUser && token && typeof checkAuth === 'function') {
           try {
             verifiedUser = await checkAuth(token);
           } catch {
@@ -95,9 +169,6 @@ export default function SessionCheckScreen({ onComplete }) {
           }
         }
 
-        await new Promise((resolve) => setTimeout(resolve, 250));
-
-        // Step 3: Check Account Status & Permissions
         if (isMounted) {
           setProgress(85);
           setCurrentStepText(
@@ -119,9 +190,6 @@ export default function SessionCheckScreen({ onComplete }) {
           return;
         }
 
-        await new Promise((resolve) => setTimeout(resolve, 250));
-
-        // Step 4: Finalize Verification
         if (isMounted) {
           setProgress(100);
           setCurrentStepText(
@@ -129,13 +197,10 @@ export default function SessionCheckScreen({ onComplete }) {
               ? 'تم التأكد من صلاحيات الجلسة وتأمين البيئة بنجاح!'
               : 'Session permissions verified & environment secured successfully!'
           );
-        }
-
-        await new Promise((resolve) => setTimeout(resolve, 200));
-
-        if (isMounted && !completedRef.current) {
-          completedRef.current = true;
-          if (onComplete) onComplete();
+          if (!completedRef.current) {
+            completedRef.current = true;
+            if (onComplete) onComplete();
+          }
         }
       } catch {
         if (isMounted) {
@@ -161,26 +226,14 @@ export default function SessionCheckScreen({ onComplete }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const securityLabelText = lang === 'ar' ? 'توثيق نابه الآمن' : 'Nabeh Secure Authentication';
-
   return (
-    <main className="session-check-screen" data-theme={theme} dir={dir} role="status" aria-live="polite" aria-busy="true">
-      <div className="session-grid" />
-      <div className="session-check-card">
-        <span className="session-security-label">
-          <i style={{ background: isError ? 'var(--color-danger, #ef4444)' : undefined }} /> {securityLabelText}
-        </span>
-        <SecurityShield theme={theme} />
-        <h1>{t('sessionCheck.title') || (lang === 'ar' ? 'تأمين وفحص الجلسة' : 'Securing & Verifying Session')}</h1>
-        <p>{t('sessionCheck.desc') || (lang === 'ar' ? 'جاري التحقق من هوية الجلسة وتطبيق السياسات الأمنية المشفرة' : 'Verifying session identity and applying security policies')}</p>
-        <div className="session-progress">
-          <span style={{ width: `${progress}%`, background: isError ? 'var(--color-danger, #ef4444)' : undefined }} />
-        </div>
-        <div className="session-status">
-          <span className="session-status-dot" style={{ background: isError ? 'var(--color-danger, #ef4444)' : undefined }} />
-          {`${currentStepText || (t('sessionCheck.status') || (lang === 'ar' ? 'اتصال مشفر • تحقق متعدد الطبقات' : 'Encrypted Connection • Multi-layer Verification'))} (${Math.round(progress)}%)`}
-        </div>
-      </div>
-    </main>
+    <UnifiedLoadingGate
+      badgeText={lang === 'ar' ? 'توثيق نابه الآمن' : 'Nabeh Secure Verification'}
+      title={lang === 'ar' ? 'جارِ تأمين الجلسة' : 'Securing Session'}
+      subtitle={lang === 'ar' ? 'يتم التحقق من هوية الجلسة وتطبيق سياسات الحماية' : 'Verifying session identity & enforcing protection policies'}
+      statusText={currentStepText}
+      progress={progress}
+      isError={isError}
+    />
   );
 }

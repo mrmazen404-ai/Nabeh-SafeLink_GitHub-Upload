@@ -58,6 +58,8 @@ export default function UrlEvidenceCard({ card, lang = 'ar', t }) {
     VT_SIGNAL: 'ReasonVtSignal',
     ML_STRONG_SIGNAL_ONLY: 'ReasonMlOnly',
     ML_SUSPICIOUS_SIGNAL: 'ReasonMlSuspicious',
+    ML_HIGH_CONFIDENCE_STRUCTURAL: 'ReasonMlHighConfidence',
+    ML_VT_CONFLICT: 'ReasonMlVtConflict',
     SAFE_SOURCE_CONSENSUS: 'ReasonSafeConsensus',
     HYBRID_WEIGHTED_SUSPICIOUS: 'ReasonHybridSuspicious',
     HYBRID_WEIGHTED_INCONCLUSIVE: 'ReasonHybridUnknown',

@@ -181,6 +181,117 @@ def _load_profile(user_id: str) -> dict:
     return result.data[0] if result.data else {}
 
 
+@router.get("/bootstrap")
+async def dashboard_bootstrap(response: Response, authorization: Optional[str] = Header(None)):
+    """Aggregate initial dashboard state into a single unified payload."""
+    user = _require_user(authorization)
+    response.headers["Cache-Control"] = "no-store, private"
+    user_id = str(user["id"])
+    day_ago = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
+    try:
+        scans_result = supabase.table("scans").select(
+            "id,input_type,input_value_masked,classification,confidence_score,created_at,completed_at"
+        ).eq("user_id", user_id).order("created_at", desc=True).limit(50).execute()
+        scans = scans_result.data or []
+        for scan in scans:
+            scan["confidence_score"] = None
+
+        profile = _load_profile(user_id)
+
+        notifications_result = supabase.table("notifications").select(
+            "id,scan_id,type,title,body,is_read,created_at,read_at"
+        ).eq("user_id", user_id).order("created_at", desc=True).limit(50).execute()
+        notifications = notifications_result.data or []
+
+        prefs_result = supabase.table("notification_preferences").select(
+            "user_id,in_app_enabled,email_enabled,dangerous_scan_enabled,weekly_summary_enabled,updated_at"
+        ).eq("user_id", user_id).limit(1).execute()
+        preferences = prefs_result.data[0] if prefs_result.data else {
+            "user_id": user_id, "in_app_enabled": True, "email_enabled": False,
+            "dangerous_scan_enabled": True, "weekly_summary_enabled": False
+        }
+
+        consents_result = supabase.table("privacy_consents").select(
+            "id,consent_type,version,granted,granted_at,revoked_at"
+        ).eq("user_id", user_id).order("granted_at", desc=True).limit(50).execute()
+        consents = consents_result.data or []
+
+        security_activity_result = supabase.table("audit_logs").select(
+            "id,action,resource_type,metadata_masked,created_at"
+        ).eq("actor_user_id", user_id).order("created_at", desc=True).limit(20).execute()
+        security_activity = security_activity_result.data or []
+
+        counts = {"SAFE": 0, "SUSPICIOUS": 0, "DANGEROUS": 0, "UNKNOWN": 0}
+        scans_last_24h = 0
+        for scan in scans:
+            classification = scan.get("classification") or "UNKNOWN"
+            counts[classification] = counts.get(classification, 0) + 1
+            if scan.get("created_at") and scan["created_at"] >= day_ago:
+                scans_last_24h += 1
+
+        unread_count = sum(1 for n in notifications if not n.get("is_read"))
+
+        activities = []
+        for item in security_activity:
+            activities.append({
+                "id": f"audit:{item['id']}", "kind": "security",
+                "action": item.get("action", "OTHER"), "title": "نشاط أمني",
+                "created_at": item.get("created_at")
+            })
+        for item in scans:
+            activities.append({
+                "id": f"scan:{item['id']}", "kind": "scan",
+                "action": item.get("classification") or "UNKNOWN", "title": "اكتمل فحص جديد",
+                "created_at": item.get("created_at")
+            })
+        for item in notifications:
+            activities.append({
+                "id": f"notification:{item['id']}", "kind": "notification",
+                "action": item.get("type", "SYSTEM"), "title": item.get("title") or "تنبيه النظام",
+                "created_at": item.get("created_at")
+            })
+        activities.sort(key=lambda item: item.get("created_at") or "", reverse=True)
+
+        overview_data = {
+            "user": _user_public(user, profile),
+            "permissions": {
+                "can_scan": True, "can_view_history": True, "can_view_statistics": True,
+                "can_manage_profile": True, "can_manage_notifications": True, "can_manage_privacy": True,
+                "can_manage_users": user.get("role") in {"ADMIN", "SUPERVISOR"},
+                "role": user.get("role", "USER"),
+            },
+            "statistics": {"total": len(scans), "safe": counts["SAFE"], "suspicious": counts["SUSPICIOUS"], "dangerous": counts["DANGEROUS"], "unknown": counts["UNKNOWN"]},
+            "unread_notifications": unread_count,
+            "recent_scans": scans[:5],
+        }
+
+        live_stats_data = {
+            "total": len(scans), "last_24_hours": scans_last_24h,
+            "unread_notifications": unread_count,
+            "safe": counts["SAFE"], "suspicious": counts["SUSPICIOUS"],
+            "dangerous": counts["DANGEROUS"], "unknown": counts["UNKNOWN"],
+            "generated_at": _now()
+        }
+
+        return {
+            "success": True,
+            "data": {
+                "overview": overview_data,
+                "scans": scans,
+                "profile": _user_public(user, profile),
+                "notifications": notifications,
+                "preferences": preferences,
+                "consents": consents,
+                "security_activity": security_activity,
+                "live_stats": live_stats_data,
+                "activities": activities[:30],
+            }
+        }
+    except Exception as error:
+        log_event(logger, logging.ERROR, "dashboard_bootstrap_failed", error_type=type(error).__name__)
+        raise HTTPException(status_code=503, detail="تعذر تحميل بيانات لوحة التحكم") from None
+
+
 @router.get("/overview")
 async def dashboard_overview(response: Response, authorization: Optional[str] = Header(None)):
     user = _require_user(authorization)

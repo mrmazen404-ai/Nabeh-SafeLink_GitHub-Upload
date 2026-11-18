@@ -33,6 +33,7 @@ const API_ERROR_CODE_MAP = {
   AUTH_REQUIRED: 'SCAN_E_AUTH',
   UNAUTHENTICATED: 'SCAN_E_AUTH',
   GUEST_SCAN_DISABLED: 'SCAN_E_GUEST_DISABLED',
+  TERMS_CONSENT_REQUIRED: 'SCAN_E_TERMS_REQUIRED',
   ACCESS_DENIED: 'SCAN_E_ACCESS',
   RATE_LIMITED: 'SCAN_E_RATE_LIMIT',
   SCAN_RATE_LIMITED: 'SCAN_E_RATE_LIMIT',
@@ -59,6 +60,11 @@ const SCAN_ERROR_COPY = {
   SCAN_E_GUEST_DISABLED: {
     ar: 'فحص الضيف متوقف حاليًا. سجّل الدخول لاستخدام الفحص أو حاول لاحقًا.',
     en: 'Guest scanning is currently disabled. Sign in to scan or try again later.',
+    retryable: false,
+  },
+  SCAN_E_TERMS_REQUIRED: {
+    ar: 'يتطلب هذا الفحص الموافقة على شروط الاستخدام المحدّثة. يرجى قبول شروط الاستخدام للمتابعة.',
+    en: 'Terms of Use acceptance is required to perform scans. Please review and accept the terms to continue.',
     retryable: false,
   },
   SCAN_E_ACCESS: {
@@ -126,10 +132,11 @@ function getSafeScanError(error, language) {
   let code = normalizedCode;
   if (!error) code = 'SCAN_E_GENERIC';
   if (error && !code) {
-    if (error?.code === 'ECONNABORTED' || status === 408 || status === 504) code = 'SCAN_E_TIMEOUT';
+    if (rawCode === 'TERMS_CONSENT_REQUIRED' || responseBody?.detail?.code === 'TERMS_CONSENT_REQUIRED') code = 'SCAN_E_TERMS_REQUIRED';
+    else if (error?.code === 'ECONNABORTED' || status === 408 || status === 504) code = 'SCAN_E_TIMEOUT';
     else if (status === 400 || status === 422) code = 'SCAN_E_INPUT';
     else if (status === 401) code = 'SCAN_E_AUTH';
-    else if (status === 403) code = 'SCAN_E_ACCESS';
+    else if (status === 403) code = rawCode === 'GUEST_SCAN_DISABLED' ? 'SCAN_E_GUEST_DISABLED' : 'SCAN_E_ACCESS';
     else if (status === 429) code = 'SCAN_E_RATE_LIMIT';
     else if (status === 502) code = 'SCAN_E_PROVIDER';
     else if (status === 503) code = 'SCAN_E_UNAVAILABLE';

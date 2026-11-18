@@ -149,7 +149,6 @@ export default function Login({ onNavigate }) {
             <SubmitArrow size={17} color="currentColor" />
           </button>
         </form>
-
         <p className="login-register">{t('auth.noAccount')} <button type="button" onClick={() => onNavigate('register')}>{t('auth.register')}</button></p>
         <button type="button" className="login-guest" onClick={() => onNavigate('scan')}><BackArrow size={15} /> {t('auth.continueGuest')}</button>
       </div>

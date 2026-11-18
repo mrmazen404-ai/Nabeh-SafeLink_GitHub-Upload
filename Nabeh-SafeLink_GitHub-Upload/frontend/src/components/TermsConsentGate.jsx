@@ -3,7 +3,28 @@ import { Outlet } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { useLanguage } from '../context/LanguageContext';
 import { useRuntimeConfig } from '../context/RuntimeConfigContext';
+import { UnifiedLoadingGate } from './SessionCheckScreen';
 import api from '../services/api';
+const DEFAULT_TERMS = {
+  ar: {
+    title: 'شروط الاستخدام المحدّثة',
+    version: '1.0',
+    content_markdown: `تقدم Nabeh SafeLink خدمة مساعدة لتحليل الروابط والرسائل والمؤشرات المرتبطة بالاحتيال. النتائج احتمالية وليست ضمانًا أمنيًا أو قرارًا قانونيًا أو ماليًا.
+
+يلتزم المستخدم باستخدام الخدمة لأغراض مشروعة، وعدم إرسال كلمات المرور أو مفاتيح الوصول أو بيانات البطاقات أو أي أسرار. لا يجوز محاولة تعطيل الخدمة أو تجاوز حدود الاستخدام.
+
+يستطيع المستخدم إدارة فحوصاته وطلب إخفائها أو حذف بيانات حسابه وفق سياسة الخصوصية والاحتفاظ.`
+  },
+  en: {
+    title: 'Updated Terms of Use',
+    version: '1.0',
+    content_markdown: `Nabeh SafeLink provides an assistance service for analyzing links, messages, and fraud-related signals. Results are probabilistic and are not a security guarantee.
+
+Use the service lawfully. Do not submit passwords, access keys, or payment-card data.
+
+You can manage scans and request hiding or deletion of account data under the privacy policy.`
+  }
+};
 
 export default function TermsConsentGate({ children }) {
   const { config } = useRuntimeConfig();
@@ -26,8 +47,16 @@ export default function TermsConsentGate({ children }) {
     setError('');
     try {
       const response = await api.get('/legal/terms-status');
-      if (!response.data?.success || !response.data?.data) throw new Error('Invalid terms status');
-      setStatus(response.data.data);
+      if (response.data?.success && response.data?.data) {
+        const data = response.data.data;
+        if (!data.accepted && data.terms && !data.terms.content_markdown) {
+          const fallback = DEFAULT_TERMS[lang === 'ar' ? 'ar' : 'en'];
+          data.terms = { ...data.terms, ...fallback };
+        }
+        setStatus(data);
+        return;
+      }
+      throw new Error('Invalid terms status');
     } catch {
       setStatus(null);
       setError(lang === 'ar' ? 'تعذر تحميل حالة الشروط. أعد المحاولة.' : 'Could not load the terms status. Please retry.');
@@ -35,13 +64,12 @@ export default function TermsConsentGate({ children }) {
   }, [config.require_latest_terms, isGuest, user, lang]);
 
   useEffect(() => {
-    setStatus(null);
     setChecked(false);
     if (!authLoading) loadStatus();
   }, [authLoading, user?.user_id, user?.id, loadStatus]);
 
   const acceptTerms = async () => {
-    if (!checked || busy || !status?.version || !status?.terms?.content_markdown) return;
+    if (!checked || busy) return;
     setBusy(true);
     setError('');
     try {
@@ -56,20 +84,33 @@ export default function TermsConsentGate({ children }) {
   };
 
   if (!config.require_latest_terms || isGuest) return children ?? <Outlet />;
-  if (authLoading || !status && !error) return <main className="terms-gate-loading" aria-live="polite">{lang === 'ar' ? 'جارٍ التحقق من الشروط...' : 'Checking the terms…'}</main>;
+  if (authLoading || (!status && !error)) {
+    const isArabic = lang === 'ar';
+    return (
+      <UnifiedLoadingGate
+        badgeText={isArabic ? 'التحقق من السياسات' : 'Policy Verification'}
+        title={isArabic ? 'جارِ التحقق من الشروط والسياسات' : 'Checking Terms & Policies'}
+        subtitle={isArabic ? 'مطابقة أحدث إصدار لشروط الاستخدام المعتمدة' : 'Verifying current terms of use policy version'}
+        statusText={isArabic ? 'فحص حالة الموافقة الأمنية...' : 'Checking policy consent status...'}
+        progress={50}
+      />
+    );
+  }
   if (status?.accepted || status?.required === false) return children ?? <Outlet />;
 
-  const terms = status?.terms || {};
   const isArabic = lang === 'ar';
-  const canAccept = Boolean(checked && status?.version && terms.content_markdown && !busy);
+  const fallbackTerms = DEFAULT_TERMS[isArabic ? 'ar' : 'en'];
+  const terms = status?.terms || fallbackTerms;
+  const contentMarkdown = terms.content_markdown || fallbackTerms.content_markdown;
+  const canAccept = Boolean(checked && !busy);
   return (
     <main className="terms-gate" dir={dir}>
       <section className="terms-gate-card" aria-labelledby="terms-gate-title">
         <span className="terms-gate-eyebrow">{isArabic ? 'مطلوب إجراء' : 'Action required'}</span>
-        <h1 id="terms-gate-title">{terms.title || (isArabic ? 'شروط الاستخدام المحدّثة' : 'Updated Terms of Use')}</h1>
-        <p>{isArabic ? `النسخة ${status?.version || terms.version || '—'} — يرجى مراجعة الشروط قبل المتابعة.` : `Version ${status?.version || terms.version || '—'} — review the terms before continuing.`}</p>
+        <h1 id="terms-gate-title">{terms.title || fallbackTerms.title}</h1>
+        <p>{isArabic ? `النسخة ${terms.version || '1.0'} — يرجى مراجعة الشروط قبل المتابعة.` : `Version ${terms.version || '1.0'} — review the terms before continuing.`}</p>
         <div className="terms-gate-content" tabIndex="0" aria-label={isArabic ? 'نص شروط الاستخدام' : 'Terms of Use text'}>
-          {terms.content_markdown || (isArabic ? 'تعذر تحميل نص الشروط.' : 'Terms text is unavailable.')}
+          {contentMarkdown}
         </div>
         <label className="terms-gate-check">
           <input type="checkbox" checked={checked} onChange={(event) => setChecked(event.target.checked)} />

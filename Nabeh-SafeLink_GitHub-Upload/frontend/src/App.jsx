@@ -26,8 +26,8 @@ import Register from './pages/auth/Register';
 import ForgotPassword from './pages/auth/ForgotPassword';
 import ResetPassword from './pages/auth/ResetPassword';
 import VerifyOtp from './pages/auth/VerifyOtp';
+import SessionCheckScreen, { UnifiedLoadingGate } from './components/SessionCheckScreen';
 import WelcomePage from './pages/WelcomePage';
-import SessionCheckScreen from './components/SessionCheckScreen';
 
 function lazyWithRetry(componentImport) {
   return lazy(async () => {
@@ -122,9 +122,9 @@ function ProtectedRoute() {
 }
 
 function GuestRoute() {
-  const { isGuest, loading } = useAuth();
-  if (loading) return null;
-  if (!isGuest) return <Navigate to="/" replace />;
+  const { isGuest, status } = useAuth();
+  if (status === 'checking') return null;
+  if (!isGuest && status === 'authenticated') return <Navigate to="/" replace />;
   return <Outlet />;
 }
 
@@ -344,7 +344,22 @@ function RuntimeApplication() {
   const { config, loading, refresh } = useRuntimeConfig();
   const [initialScanUrl, setInitialScanUrl] = useState('');
 
-  if (loading) return <main className="runtime-config-loading" role="status">{config.default_language === 'ar' ? 'جارٍ تحميل إعدادات النظام...' : 'Loading system settings…'}</main>;
+  if (loading) {
+    const isArabic = config.default_language === 'ar';
+    return (
+      <ThemeProvider>
+        <LanguageProvider>
+          <UnifiedLoadingGate
+            badgeText={isArabic ? 'تهيئة النظام' : 'System Initialization'}
+            title={isArabic ? 'جارِ تحميل إعدادات النظام' : 'Loading System Settings'}
+            subtitle={isArabic ? 'يتم التحقق من السياسات الحية والربط المشفر' : 'Verifying live policies & encrypted connection'}
+            statusText={isArabic ? 'تحميل إعدادات وسياسات التشغيل...' : 'Loading system runtime config...'}
+            progress={40}
+          />
+        </LanguageProvider>
+      </ThemeProvider>
+    );
+  }
   if (config.service_available === false) {
     return <ThemeProvider><LanguageProvider><ServiceUnavailablePage onCheckAgain={refresh} /></LanguageProvider></ThemeProvider>;
   }
@@ -368,7 +383,6 @@ function RuntimeApplication() {
     </AuthProvider>
   );
 }
-
 export default function App() {
   return (
     <AppErrorBoundary>
