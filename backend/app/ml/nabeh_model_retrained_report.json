@@ -1,0 +1,192 @@
+{
+  "model_name": "Nabeh SafeLink",
+  "version": "candidate-2026-10-23-42-features",
+  "model_type": "LGBMClassifier",
+  "feature_count": 42,
+  "feature_names": [
+    "url_length",
+    "host_length",
+    "path_length",
+    "query_length",
+    "fragment_length",
+    "path_depth",
+    "query_param_count",
+    "subdomain_length",
+    "subdomain_count",
+    "domain_length",
+    "tld_length",
+    "digit_count_url",
+    "digit_ratio_url",
+    "digit_count_domain",
+    "digit_ratio_domain",
+    "letter_count_url",
+    "special_char_count_url",
+    "hyphen_count_domain",
+    "dot_count_domain",
+    "at_count_url",
+    "percent_count_url",
+    "is_https",
+    "has_ip_host",
+    "has_port",
+    "nonstandard_port",
+    "has_at_symbol",
+    "has_double_slash_path",
+    "has_encoded_chars",
+    "has_hex_escape",
+    "has_punycode",
+    "suspicious_word_count",
+    "brand_path_count",
+    "brand_impersonation",
+    "suspicious_extension",
+    "long_subdomain",
+    "many_subdomains",
+    "many_digits",
+    "many_hyphens_domain",
+    "many_special_chars",
+    "host_entropy",
+    "path_entropy",
+    "url_entropy"
+  ],
+  "label_mapping": {
+    "good": 0,
+    "bad": 1
+  },
+  "selected_threshold": 0.5166115785121916,
+  "threshold_policy": "maximum recall with validation FPR <= 0.02",
+  "validation_metrics_at_selected_threshold": {
+    "threshold": 0.5166115785121916,
+    "accuracy": 0.9732562620423892,
+    "precision_phishing": 0.9721373692492826,
+    "recall_phishing": 0.9639284075263882,
+    "f1_phishing": 0.9680154852981842,
+    "false_positive_rate": 0.01999335768847559,
+    "true_negative_rate": 0.9800066423115245,
+    "roc_auc": 0.9948441670734918,
+    "pr_auc": 0.9924405597922117,
+    "tn": 14754,
+    "fp": 301,
+    "fn": 393,
+    "tp": 10502
+  },
+  "test_metrics_at_selected_threshold": {
+    "threshold": 0.5166115785121916,
+    "accuracy": 0.973109110379566,
+    "precision_phishing": 0.97714949651433,
+    "recall_phishing": 0.9580406303398519,
+    "f1_phishing": 0.9675007190106414,
+    "false_positive_rate": 0.016077389467947407,
+    "true_negative_rate": 0.9839226105320525,
+    "roc_auc": 0.9951955908075109,
+    "pr_auc": 0.993635026365143,
+    "tn": 14443,
+    "fp": 236,
+    "fn": 442,
+    "tp": 10092
+  },
+  "test_metrics_at_0_5": {
+    "threshold": 0.5,
+    "accuracy": 0.9733867449331693,
+    "precision_phishing": 0.9767959006091076,
+    "recall_phishing": 0.9590848680463262,
+    "f1_phishing": 0.9678593667672558,
+    "false_positive_rate": 0.01634988759452279,
+    "true_negative_rate": 0.9836501124054772,
+    "roc_auc": 0.9951955908075109,
+    "pr_auc": 0.993635026365143,
+    "tn": 14439,
+    "fp": 240,
+    "fn": 431,
+    "tp": 10103
+  },
+  "split_rows": {
+    "train": 109596,
+    "validation": 25950,
+    "test": 25213
+  },
+  "split_domains": {
+    "train": 70450,
+    "validation": 15096,
+    "test": 15097
+  },
+  "source_rows": {
+    "Mendeley_URL-Phish_v2": 113603,
+    "PhishTank_online_valid": 47156
+  },
+  "label_rows": {
+    "0": 98454,
+    "1": 62305
+  },
+  "root_domain_label_conflicts_removed": 181,
+  "known_safe_holdout_roots_excluded_from_training": [
+    "example.com",
+    "github.com",
+    "google.com",
+    "python.org",
+    "salla.sa",
+    "wikipedia.org"
+  ],
+  "known_safe_holdout_rows_excluded": 6654,
+  "best_iteration": 591,
+  "sources": [
+    {
+      "name": "URL-Phish Mendeley Data v2",
+      "doi": "10.17632/65z9twcx3r.2",
+      "published": "2026-03-09",
+      "license": "CC BY 4.0",
+      "url": "https://data.mendeley.com/datasets/65z9twcx3r/2"
+    },
+    {
+      "name": "PhishTank online-valid feed",
+      "url": "https://data.phishtank.com/data/online-valid.csv",
+      "usage_terms": "PhishTank terms page states Data is available for commercial use without charge",
+      "terms_url": "https://phishtank.net/terms.php"
+    }
+  ],
+  "input_sha256": {
+    "mendeley_zip": "a715025decc8000e1fae4a5211160a5a15daccff590afdf9a28a30bde8dc6f4e",
+    "phishtank_csv": "e77b06ecfc6d5eef9a5588968b682c4ecde5a45a51b7c60bbc3e09cfa232162a"
+  },
+  "training_utc": "2026-10-22T23:03:11.623990+00:00",
+  "training_script": "backend/scripts/train_url_model.py",
+  "urls_were_fetched": false,
+  "known_safe_holdout_predictions": {
+    "https://example.com/": {
+      "classification": "SAFE",
+      "confidence": 0.9011,
+      "phishing_prob": 0.0989,
+      "source": "ML_MODEL"
+    },
+    "https://google.com/": {
+      "classification": "SAFE",
+      "confidence": 0.8663,
+      "phishing_prob": 0.1337,
+      "source": "ML_MODEL"
+    },
+    "https://wikipedia.org/": {
+      "classification": "SAFE",
+      "confidence": 0.8271,
+      "phishing_prob": 0.1729,
+      "source": "ML_MODEL"
+    },
+    "https://github.com/": {
+      "classification": "SAFE",
+      "confidence": 0.85,
+      "phishing_prob": 0.15,
+      "source": "ML_MODEL"
+    },
+    "https://python.org/": {
+      "classification": "SAFE",
+      "confidence": 0.9198,
+      "phishing_prob": 0.0802,
+      "source": "ML_MODEL"
+    },
+    "https://salla.sa/": {
+      "classification": "SAFE",
+      "confidence": 0.9693,
+      "phishing_prob": 0.0307,
+      "source": "ML_MODEL"
+    }
+  },
+  "known_safe_holdout_all_not_dangerous": true,
+  "candidate_passed_smoke_gate": true
+}

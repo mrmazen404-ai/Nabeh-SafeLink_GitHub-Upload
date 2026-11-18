@@ -1,0 +1,63 @@
+.runtime-config-loading,
+.feature-disabled-page,
+.terms-gate,
+.terms-gate-loading {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: var(--color-bg, #f8fafc);
+  color: var(--color-text, #0f172a);
+}
+
+.runtime-config-loading,
+.terms-gate-loading {
+  font-weight: 700;
+  text-align: center;
+}
+
+.feature-disabled-card,
+.terms-gate-card {
+  width: min(100%, 760px);
+  padding: clamp(24px, 5vw, 42px);
+  border: 1px solid var(--color-border, #e2e8f0);
+  border-radius: 22px;
+  background: var(--color-surface, #fff);
+  box-shadow: 0 18px 48px rgba(15, 23, 42, .10);
+}
+
+.feature-disabled-card { max-width: 560px; text-align: center; }
+.feature-disabled-card h1,
+.terms-gate-card h1 { margin: 0 0 12px; color: var(--color-primary, #0a2540); font-size: clamp(1.35rem, 3vw, 2rem); }
+.feature-disabled-card p,
+.terms-gate-card > p { margin: 0 0 20px; color: var(--color-text-muted, #64748b); line-height: 1.8; }
+
+.terms-gate-eyebrow { display: inline-block; margin-bottom: 8px; color: var(--color-secondary, #1e5eff); font-weight: 800; font-size: .82rem; }
+.terms-gate-content {
+  max-height: min(48vh, 480px);
+  overflow: auto;
+  padding: 18px;
+  border: 1px solid var(--color-border, #e2e8f0);
+  border-radius: 14px;
+  background: var(--color-bg-subtle, #f8fafc);
+  color: var(--color-text, #0f172a);
+  white-space: pre-wrap;
+  line-height: 1.8;
+}
+.terms-gate-check { display: flex; gap: 10px; align-items: flex-start; margin-top: 18px; font-weight: 700; cursor: pointer; }
+.terms-gate-check input { margin-top: 6px; accent-color: var(--color-secondary, #1e5eff); }
+.terms-gate-error { margin: 12px 0; color: #b91c1c; font-weight: 700; }
+.terms-gate-actions { display: flex; flex-wrap: wrap; gap: 10px; justify-content: flex-end; margin-top: 18px; }
+.terms-gate-primary,
+.terms-gate-secondary {
+  min-height: 44px;
+  padding: 10px 18px;
+  border: 0;
+  border-radius: 11px;
+  font: inherit;
+  font-weight: 800;
+  cursor: pointer;
+}
+.terms-gate-primary { background: #1e5eff; color: #fff; }
+.terms-gate-primary:disabled { opacity: .5; cursor: not-allowed; }
+.terms-gate-secondary { background: transparent; color: var(--color-text, #0f172a); border: 1px solid var(--color-border, #e2e8f0); }

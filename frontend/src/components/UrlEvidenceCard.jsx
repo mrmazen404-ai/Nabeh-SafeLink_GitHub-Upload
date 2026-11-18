@@ -1,0 +1,248 @@
+import '../styles/url-evidence-card.css';
+import { EvidenceCode } from '../utils/evidenceExplanations';
+
+function formatTimestamp(value, lang) {
+  if (value === null || value === undefined || value === '') return null;
+  const raw = typeof value === 'number' ? (value < 1e12 ? value * 1000 : value) : value;
+  const date = new Date(raw);
+  if (Number.isNaN(date.getTime())) return String(value);
+  return new Intl.DateTimeFormat(lang === 'ar' ? 'ar' : 'en-US', {
+    dateStyle: 'medium', timeStyle: 'short', timeZone: 'UTC',
+  }).format(date);
+}
+
+function displayValue(value, text, lang) {
+  if (typeof value === 'boolean') return value ? text('Yes') : text('No');
+  if (Array.isArray(value)) return value.length ? value.join(lang === 'ar' ? '، ' : ', ') : text('None');
+  if (value === null || value === undefined || value === '') return text('NotAvailable');
+  return String(value);
+}
+
+export default function UrlEvidenceCard({ card, lang = 'ar', t }) {
+  if (!card || typeof card !== 'object' || typeof t !== 'function') return null;
+  const text = (key) => t(`result.evidence${key}`);
+  const statusKey = {
+    SUCCESS: 'ProviderSuccess', NO_VERDICT: 'ProviderNoVerdict', NOT_CONFIGURED: 'ProviderNotConfigured',
+    AUTH_ERROR: 'ProviderAuthError', RATE_LIMITED: 'ProviderRateLimited', TIMEOUT: 'ProviderTimeout',
+    NETWORK_ERROR: 'ProviderNetworkError', PROVIDER_ERROR: 'ProviderError',
+    ANALYSIS_PENDING: 'ProviderPending', PARSE_ERROR: 'ProviderParseError',
+    NOT_REPORTED_BY_PROVIDER: 'ProviderNotReported',
+  };
+  const statusLabel = (value) => {
+    if (!value) return <EvidenceCode value="UNKNOWN" lang={lang} />;
+    const key = statusKey[value];
+    return key ? <>{text(key)} <code>({value})</code></> : <EvidenceCode value={value} lang={lang} />;
+  };
+  const decision = card.decision || {};
+  const decisionInputs = decision.inputs || {};
+  const decisionCounts = decisionInputs.virustotal_counts || {};
+  const mlSignals = Array.isArray(decisionInputs.ml_strong_signals) ? decisionInputs.ml_strong_signals : [];
+  const thresholds = decision.thresholds || {};
+  const sources = card.sources || {};
+  const vt = sources.virustotal || {};
+  const ml = sources.ml_model || {};
+  const probability = Number(ml.phishing_probability);
+  const hasCalibratedProbability = ml.probability_status === 'CALIBRATED'
+    && Number.isFinite(probability)
+    && probability >= 0
+    && probability <= 1;
+  const explanationSource = sources.explanation || {};
+  const decisionAudit = decision.audit || {};
+  const unknownAudit = decision.unknown || {};
+  const citations = Array.isArray(explanationSource.citations) ? explanationSource.citations : [];
+  const domainVerification = explanationSource.domain_verification || {};
+  const counts = vt.counts || {};
+  const reasonKey = {
+    VT_STRONG_CONSENSUS: 'ReasonVtConsensus',
+    VT_ML_CORROBORATION: 'ReasonVtMlCorroboration',
+    VT_SIGNAL: 'ReasonVtSignal',
+    ML_STRONG_SIGNAL_ONLY: 'ReasonMlOnly',
+    ML_SUSPICIOUS_SIGNAL: 'ReasonMlSuspicious',
+    ML_HIGH_CONFIDENCE_STRUCTURAL: 'ReasonMlHighConfidence',
+    ML_VT_CONFLICT: 'ReasonMlVtConflict',
+    SAFE_SOURCE_CONSENSUS: 'ReasonSafeConsensus',
+    HYBRID_WEIGHTED_SUSPICIOUS: 'ReasonHybridSuspicious',
+    HYBRID_WEIGHTED_INCONCLUSIVE: 'ReasonHybridUnknown',
+    INSUFFICIENT_EVIDENCE: 'ReasonInsufficient',
+  }[decision.code] || 'ReasonInsufficient';
+  const observationKeys = {
+    URL_SCHEME: 'UrlScheme', URL_LENGTH: 'UrlLength', SUBDOMAIN_COUNT: 'SubdomainCount',
+    IPV4_HOST: 'Ipv4Host', PUNYCODE_HOST: 'PunycodeHost', AT_SYMBOL: 'AtSymbol',
+    NONSTANDARD_PORT: 'NonstandardPort', ENCODED_CHARACTERS: 'EncodedCharacters',
+    QUERY_PARAMETER_COUNT: 'QueryParameterCount', SUSPICIOUS_TERMS: 'SuspiciousTerms',
+    BRAND_TERMS_IN_PATH_QUERY: 'BrandTerms', SUSPICIOUS_FILE_EXTENSION: 'SuspiciousExtension',
+  };
+  const countRows = [
+    ['Malicious', counts.malicious], ['Suspicious', counts.suspicious],
+    ['Harmless', counts.harmless], ['Undetected', counts.undetected],
+    ['Timeout', counts.timeout], ['Total', counts.total_engines],
+  ];
+  const scanners = Array.isArray(vt.scanner_results) ? vt.scanner_results : [];
+  const observations = card.url_observations?.items || [];
+  const unavailableCounts = !Object.keys(counts).length;
+  const thresholdRows = [
+    ['ThresholdDangerous', thresholds.dangerous_min_malicious_engines],
+    ['ThresholdVtMl', thresholds.dangerous_with_ml_max_malicious_engines],
+    ['ThresholdSuspicious', thresholds.suspicious_min_vt_suspicious_engines],
+  ].filter(([, value]) => value !== undefined && value !== null);
+
+  return (
+    <section className="url-evidence-card" aria-labelledby="url-evidence-title">
+      <header className="url-evidence-header">
+        <div>
+          <h2 id="url-evidence-title">{text('Title')}</h2>
+          <p>{text('Intro')}</p>
+          {card.scan_id && <p className="url-evidence-reference"><strong>{text('ScanReference')}:</strong> <code>{card.scan_id}</code></p>}
+        </div>
+      </header>
+
+      <section className="url-evidence-decision" aria-labelledby="url-evidence-decision-title">
+        <h3 id="url-evidence-decision-title">{text('Decision')}</h3>
+        <p>{text(reasonKey)} <EvidenceCode value={decision.code || 'INSUFFICIENT_EVIDENCE'} lang={lang} /></p>
+        <div className="url-evidence-decision-inputs">
+          <h4>{text('DecisionInputs')}</h4>
+          <dl>
+            <div><dt>{text('VtStatus')}</dt><dd><EvidenceCode value={decisionInputs.virustotal_status || 'UNKNOWN'} lang={lang} /></dd></div>
+            <div><dt>{text('ProviderStatus')}</dt><dd>{statusLabel(decisionInputs.virustotal_provider_status || 'NOT_REPORTED_BY_PROVIDER')}</dd></div>
+            <div><dt>{text('Malicious')}</dt><dd>{decisionCounts.malicious ?? '—'}</dd></div>
+            <div><dt>{text('Suspicious')}</dt><dd>{decisionCounts.suspicious ?? '—'}</dd></div>
+            <div><dt>{text('ModelClass')}</dt><dd><EvidenceCode value={decisionInputs.ml_classification || 'UNKNOWN'} lang={lang} /></dd></div>
+            <div><dt>{text('ModelSource')}</dt><dd><EvidenceCode value={decisionInputs.ml_source || 'NOT_REPORTED'} lang={lang} /></dd></div>
+            <div><dt>{lang === 'ar' ? 'إشارات ML الصريحة' : 'Explicit ML signals'}</dt><dd>{mlSignals.length ? mlSignals.map((signal) => <div key={signal}><EvidenceCode value={signal} lang={lang} /></div>) : <EvidenceCode value="NONE_REPORTED" lang={lang} />}</dd></div>
+          </dl>
+        </div>
+        <div className="url-evidence-meta">
+            <span><strong>{text('RuleLabel')}:</strong> <EvidenceCode value={decision.code || 'INSUFFICIENT_EVIDENCE'} lang={lang} /></span>
+          <span><strong>{text('Policy')}:</strong> <EvidenceCode value={decision.policy_version || 'NOT_REPORTED'} lang={lang} /></span>
+        </div>
+        {Array.isArray(decisionAudit.rules_applied) && decisionAudit.rules_applied.length > 0 && (
+          <div className="url-evidence-note" role="note">
+            <strong>{lang === 'ar' ? 'تدقيق الدمج — القاعدة المطبقة: ' : 'Fusion audit — applied rule: '}</strong>
+            {decisionAudit.rules_applied.map((rule) => <div key={rule}><EvidenceCode value={rule} lang={lang} /></div>)}
+          </div>
+        )}
+        {unknownAudit.is_unknown && Array.isArray(unknownAudit.reason_codes) && (
+          <div className="url-evidence-note" role="status">
+            <strong>{lang === 'ar' ? 'أسباب UNKNOWN: ' : 'UNKNOWN reasons: '}</strong>
+            {unknownAudit.reason_codes.map((reason) => <div key={reason}><EvidenceCode value={reason} lang={lang} /></div>)}
+          </div>
+        )}
+        {thresholdRows.length > 0 && (
+          <details className="url-evidence-details">
+            <summary>{text('PolicyThresholds')}</summary>
+            <dl>
+              {thresholdRows.map(([key, value]) => <div key={key}><dt>{text(key)}</dt><dd>{Number(value)}</dd></div>)}
+            </dl>
+          </details>
+        )}
+      </section>
+
+      <div className="url-evidence-grid">
+        <section className="url-evidence-panel" aria-labelledby="url-evidence-model-title">
+          <h3 id="url-evidence-model-title">{text('Model')}</h3>
+          <dl>
+            <div><dt>{text('Status')}</dt><dd><EvidenceCode value={ml.status || 'UNKNOWN'} lang={lang} /></dd></div>
+            <div><dt>{text('Classification')}</dt><dd><EvidenceCode value={ml.classification || 'UNKNOWN'} lang={lang} /></dd></div>
+            <div><dt>{text('Source')}</dt><dd><EvidenceCode value={ml.source || 'NOT_REPORTED'} lang={lang} /></dd></div>
+            <div>
+              <dt>{text('PhishingProbability')}</dt>
+              <dd>
+                {hasCalibratedProbability
+                  ? `${(probability * 100).toFixed(1)}%`
+                  : text('ProbabilityUnavailable')}
+              </dd>
+            </div>
+            <div><dt>{text('ProbabilityStatus')}</dt><dd><EvidenceCode value={ml.probability_status || 'UNAVAILABLE'} lang={lang} /></dd></div>
+            {hasCalibratedProbability && ml.threshold !== null && ml.threshold !== undefined && (
+              <div><dt>{text('ModelThreshold')}</dt><dd>{(Number(ml.threshold) * 100).toFixed(1)}%</dd></div>
+            )}
+          </dl>
+          <p className="url-evidence-note">
+            {lang === 'ar' ? 'هذا مصدر إشارة أمنية؛ لا تعرض البطاقة مساهمات ميزات LightGBM الفعلية.' : 'This is a security signal; this card does not expose actual LightGBM feature contributions.'}
+          </p>
+          <p className="url-evidence-note">
+            {hasCalibratedProbability ? text('CalibratedProbabilityNotice') : text('UncalibratedProbabilityNotice')}
+          </p>
+          <p className="url-evidence-note">{text('ModelAttribution')}</p>
+        </section>
+
+        <section className="url-evidence-panel" aria-labelledby="url-evidence-vt-title">
+          <h3 id="url-evidence-vt-title">{text('VirusTotal')}</h3>
+          <dl>
+            <div><dt>{text('Status')}</dt><dd>{statusLabel(vt.status)}</dd></div>
+            <div><dt>{text('Classification')}</dt><dd><EvidenceCode value={vt.classification || 'UNKNOWN'} lang={lang} /></dd></div>
+            {!unavailableCounts && countRows.map(([key, value]) => (
+              <div key={key}><dt>{text(key)}</dt><dd>{Number.isFinite(Number(value)) ? Number(value) : '—'}</dd></div>
+            ))}
+            {unavailableCounts && <div><dt>{text('EngineCounts')}</dt><dd>{text('NotAvailable')}</dd></div>}
+            {formatTimestamp(vt.last_analysis_date, lang) && <div><dt>{text('ProviderTime')}</dt><dd>{formatTimestamp(vt.last_analysis_date, lang)} UTC</dd></div>}
+            {formatTimestamp(vt.evidence_timestamp, lang) && <div><dt>{text('ReportTime')}</dt><dd>{formatTimestamp(vt.evidence_timestamp, lang)} UTC</dd></div>}
+            {(vt.freshness_reason || vt.analysis_freshness_reason) && <div><dt>{lang === 'ar' ? 'سبب حداثة التقرير' : 'Freshness reason'}</dt><dd><EvidenceCode value={vt.freshness_reason || vt.analysis_freshness_reason} lang={lang} /></dd></div>}
+            {vt.error && <div><dt>{text('ErrorCode')}</dt><dd><EvidenceCode value={String(vt.error).slice(0, 100)} lang={lang} /></dd></div>}
+            <div><dt>{lang === 'ar' ? 'دور المصدر' : 'Source role'}</dt><dd><EvidenceCode value={vt.role || 'PROVIDER_FACTS_ONLY'} lang={lang} /></dd></div>
+          </dl>
+          {scanners.length > 0 ? (
+            <details className="url-evidence-details">
+              <summary>{text('ScannerDetails')} ({vt.scanner_results_total ?? scanners.length})</summary>
+              {vt.scanner_results_truncated && <p className="url-evidence-note">{text('ScannerResultsTruncated')}</p>}
+              {!vt.scanner_results_truncated && Number(vt.scanner_results_omitted || 0) > 0 && <p className="url-evidence-note">{text('ScannerResultsOmitted')} ({vt.scanner_results_omitted})</p>}
+              <div className="url-evidence-table-wrap">
+                <table>
+                  <thead><tr><th scope="col">{text('Engine')}</th><th scope="col">{text('Category')}</th><th scope="col">{text('Method')}</th><th scope="col">{text('RawResult')}</th></tr></thead>
+                  <tbody>{scanners.map((item, index) => (
+                    <tr key={`${item.engine_name || 'engine'}-${index}`}>
+                      <td data-label={text('Engine')}>{item.engine_name || '—'}</td><td data-label={text('Category')}><EvidenceCode value={item.category || 'unknown'} lang={lang} /></td><td data-label={text('Method')}>{item.method || '—'}</td><td data-label={text('RawResult')}>{item.result || '—'}</td>
+                    </tr>
+                  ))}</tbody>
+                </table>
+              </div>
+            </details>
+          ) : <p className="url-evidence-note">{text('NoScannerDetails')}</p>}
+        </section>
+      </div>
+
+      <section className="url-evidence-panel url-evidence-observations-panel" aria-labelledby="url-evidence-observations-title">
+        <h3 id="url-evidence-observations-title">{text('Observations')}</h3>
+        {observations.length > 0 ? (
+          <dl className="url-evidence-observations">
+            {observations.map((item, index) => (
+              <div key={`${item.code}-${index}`}>
+                <dt>{text(observationKeys[item.code] || 'NotAvailable')} <EvidenceCode value={item.code} lang={lang} /></dt>
+                <dd>{displayValue(item.value, text, lang)}</dd>
+              </div>
+            ))}
+          </dl>
+        ) : <p className="url-evidence-note">{text('NotAvailable')}</p>}
+        <p className="url-evidence-note">{text('FeatureLimit')}</p>
+      </section>
+
+      <section className="url-evidence-limitations" aria-labelledby="url-evidence-limits-title">
+        <h3 id="url-evidence-limits-title">{text('Limitations')}</h3>
+        <ul>
+          {['CountsLimit', 'UndetectedLimit', 'FeatureLimit', 'InternalScoresLimit', 'RuleVerifiabilityLimit', 'TimeLimit'].map((key) => <li key={key}>{text(key)}</li>)}
+        </ul>
+      </section>
+
+      <section className="url-evidence-panel" aria-labelledby="url-evidence-grounding-title">
+        <h3 id="url-evidence-grounding-title">{lang === 'ar' ? 'مصادر التفسير والتحقق المرجعي' : 'Explanation sources and reference check'}</h3>
+        <p className="url-evidence-note">
+          {lang === 'ar'
+            ? `حالة محاذاة النطاق: ${domainVerification.status || 'غير متاحة'} — لا تثبت هوية مالك النطاق.`
+            : `Domain alignment: ${domainVerification.status || 'NOT_REPORTED'} — this does not prove domain ownership.`}
+        </p>
+        <dl>
+          <div><dt>{lang === 'ar' ? 'حالة Gemini' : 'Gemini status'}</dt><dd><EvidenceCode value={explanationSource.provider_status || 'NOT_REPORTED'} lang={lang} /></dd></div>
+          {explanationSource.fallback_reason && <div><dt>{lang === 'ar' ? 'سبب الاحتياط' : 'Fallback reason'}</dt><dd><EvidenceCode value={explanationSource.fallback_reason} lang={lang} /></dd></div>}
+          <div><dt>{lang === 'ar' ? 'دور Gemini' : 'Gemini role'}</dt><dd><EvidenceCode value={explanationSource.role || 'SUPPORTING_EXPLANATION_NOT_DECISION_SOURCE'} lang={lang} /></dd></div>
+        </dl>
+        {citations.length > 0 ? (
+          <ul>
+            {citations.map((citation, index) => <li key={`${citation.url}-${index}`}><a href={citation.url} target="_blank" rel="noopener noreferrer">{citation.title || citation.url}</a></li>)}
+          </ul>
+        ) : <p className="url-evidence-note">{lang === 'ar' ? 'لم يعُد مزود Gemini مصادر Grounding قابلة للعرض.' : 'No displayable grounding sources were returned by Gemini.'}</p>}
+      </section>
+
+      {formatTimestamp(card.generated_at, lang) && <p className="url-evidence-generated">{text('GeneratedAt')}: {formatTimestamp(card.generated_at, lang)} UTC</p>}
+    </section>
+  );
+}

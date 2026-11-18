@@ -1,0 +1,1438 @@
+"""Scan processing with strict guest isolation and explicit UNKNOWN outcomes."""
+
+import asyncio
+import copy
+import hashlib
+import hmac
+from concurrent.futures import ThreadPoolExecutor
+import logging
+import re
+import threading
+import time
+from datetime import datetime, timezone
+from urllib.parse import urlsplit
+from uuid import uuid4
+
+from app.db.supabase_client import supabase
+from app.observability import elapsed_ms, log_event, resource_id, safe_error
+from app.gemini.client import generate_explanation, analyze_sms_message, _sanitize_official_portal_url
+from app.ml.predictor import BRANDS, SUSPICIOUS_EXTENSIONS, SUSPICIOUS_WORDS, extract_features, predict_url, predict_url_async
+from app.virustotal.client import check_url_virustotal
+from app.dashboard.realtime import manager
+from app.config import settings
+from app.public.metrics import record_platform_scan_metric
+from app.system_settings import setting_enabled_fail_closed
+from app.scans.text_rules import analyze_message_indicators
+from app.scans.url_utils import extract_defanged_urls_from_text, extract_web_urls_from_text, normalize_defanged_url, normalize_web_url
+
+logger = logging.getLogger(__name__)
+_METRIC_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="nabeh-scan-metric")
+_METRIC_SLOT = threading.BoundedSemaphore(1)
+URL_FUSION_POLICY_VERSION = "1.1.0"
+VT_DANGEROUS_MIN_ENGINES = 3
+VT_ML_CORROBORATION_MAX_ENGINES = 2
+ML_DANGEROUS_CORROBORATION_MIN_PROB = 0.85
+ML_STRONG_SIGNAL_MIN_PROB = 0.60
+ML_STANDALONE_DANGEROUS_MIN_PROB = 0.98
+ML_STANDALONE_DANGEROUS_MIN_SIGNALS = 2
+VT_MULTIPLE_SUSPICIOUS_MIN = 2
+HYBRID_SUSPICIOUS_THRESHOLD = 0.40
+
+
+def _scan_digest(*parts: str) -> str:
+    key_material = settings.RATE_LIMIT_SALT or settings.SUPABASE_SECRET_KEY or settings.AUTH_JWT_SECRET or "nabeh-local-test-key"
+    payload = "\0".join(str(part) for part in parts).encode("utf-8")
+    return hmac.new(key_material.encode("utf-8"), payload, hashlib.sha256).hexdigest()
+
+
+async def _record_scan_metric_best_effort(classification: str) -> None:
+    """Record an aggregate metric without extending scan latency or creating an unbounded queue."""
+    if not _METRIC_SLOT.acquire(blocking=False):
+        logger.warning("scan_metric_skipped", extra={"reason": "worker_busy"})
+        return
+    try:
+        future = _METRIC_EXECUTOR.submit(record_platform_scan_metric, classification)
+    except Exception:
+        _METRIC_SLOT.release()
+        logger.warning("scan_metric_submit_failed")
+        return
+
+    future.add_done_callback(lambda _: _METRIC_SLOT.release())
+    try:
+        await asyncio.wait_for(
+            asyncio.shield(asyncio.wrap_future(future)),
+            timeout=settings.SCAN_METRIC_TIMEOUT_SECONDS,
+        )
+    except asyncio.TimeoutError:
+        logger.warning("scan_metric_timed_out")
+    except Exception:
+        logger.warning("scan_metric_persistence_failed")
+
+ARABIC_PHISHING_KEYWORDS = (
+    "حسابك", "البنك", "تجميد", "تحديث", "كلمة المرور", "بطاقة", "جائزة",
+    "مبروك", "الفوز", "رمز", "إيقاف", "الراجحي", "الأهلي", "الإنماء",
+    "سداد", "غرامة", "ربح", "تأكيد", "انقر", "اضغط",
+)
+
+
+def _build_url_observations(target_url: str) -> list[dict]:
+    """Return measured URL properties, not model attributions or verdict reasons."""
+    features = extract_features(target_url)
+    parsed = urlsplit(target_url)
+    path_and_query = f"{parsed.path or ''}?{parsed.query or ''}".lower()
+    path = (parsed.path or "").lower()
+    terms = [word for word in SUSPICIOUS_WORDS if word in target_url.lower()]
+    brands = [brand for brand in BRANDS if brand in path_and_query]
+    extension = next((item for item in SUSPICIOUS_EXTENSIONS if path.endswith(item)), None)
+    return [
+        {"code": "URL_SCHEME", "value": (parsed.scheme or "").lower()},
+        {"code": "URL_LENGTH", "value": features["url_length"]},
+        {"code": "SUBDOMAIN_COUNT", "value": features["subdomain_count"]},
+        {"code": "IPV4_HOST", "value": bool(features["has_ip_host"])},
+        {"code": "PUNYCODE_HOST", "value": bool(features["has_punycode"])},
+        {"code": "AT_SYMBOL", "value": bool(features["has_at_symbol"])},
+        {"code": "NONSTANDARD_PORT", "value": bool(features["nonstandard_port"])},
+        {"code": "ENCODED_CHARACTERS", "value": bool(features["has_encoded_chars"])},
+        {"code": "QUERY_PARAMETER_COUNT", "value": features["query_param_count"]},
+        {"code": "SUSPICIOUS_TERMS", "value": terms},
+        {"code": "BRAND_TERMS_IN_PATH_QUERY", "value": brands},
+        {"code": "SUSPICIOUS_FILE_EXTENSION", "value": extension},
+    ]
+
+
+def _build_url_evidence_card(target_url: str, combined: dict, ml_result: dict, vt_result: dict, explanation: dict) -> dict:
+    """Build an auditable, score-free evidence snapshot from actual scan outputs."""
+    ml_result = ml_result or {}
+    vt_result = vt_result or {}
+    combined = combined or {}
+    explanation = explanation or {}
+    try:
+        observations = _build_url_observations(target_url)
+        observation_status = "AVAILABLE"
+    except Exception:
+        observations = []
+        observation_status = "UNAVAILABLE"
+
+    vt_status = str(vt_result.get("status", "UNKNOWN")).upper()
+    ml_probability_status = ml_result.get("probability_status") or (
+        "UNCALIBRATED" if "phishing_prob" in ml_result else "UNAVAILABLE"
+    )
+    count_keys = ("malicious", "suspicious", "harmless", "undetected", "timeout", "total_engines")
+    counts_available = vt_result.get("analysis_stats_available")
+    if counts_available is None:
+        # Backward compatibility for stored/provider test payloads predating this flag.
+        counts_available = any(key in vt_result for key in count_keys) and bool(vt_result.get("analysis_data_available", True))
+    if counts_available:
+        vt_counts = {}
+        source_counts = vt_result.get("counts") if isinstance(vt_result.get("counts"), dict) else vt_result
+        for key in count_keys:
+            if key not in source_counts:
+                continue
+            try:
+                value = int(source_counts[key])
+                if value >= 0:
+                    vt_counts[key] = value
+            except (TypeError, ValueError):
+                continue
+    else:
+        vt_counts = {}
+    raw_scanner_results = vt_result.get("scanner_results", [])
+    scanner_results = raw_scanner_results[:100] if isinstance(raw_scanner_results, list) else []
+    try:
+        scanner_results_total = max(len(scanner_results), int(vt_result.get("scanner_results_total", len(scanner_results)) or 0))
+    except (TypeError, ValueError):
+        scanner_results_total = len(scanner_results)
+    scanner_results_truncated = bool(vt_result.get("scanner_results_truncated", False)) or scanner_results_total > 100
+    scanner_results_omitted = max(0, scanner_results_total - len(scanner_results))
+    rule_map = {
+        "VT_STRONG_CONSENSUS": "RULE_VT_MALICIOUS_ENGINE_CONSENSUS",
+        "VT_ML_CORROBORATION": "RULE_VT_AND_ML_CORROBORATION",
+        "ML_HIGH_CONFIDENCE_STRUCTURAL": "RULE_ML_HIGH_CONFIDENCE_PLUS_TWO_STRUCTURAL_SIGNALS",
+        "ML_VT_CONFLICT": "RULE_ML_DANGEROUS_CONFLICTED_BY_VT_SAFE",
+        "VT_SIGNAL": "RULE_VT_SIGNAL_SUSPICIOUS",
+        "ML_STRONG_SIGNAL_ONLY": "RULE_ML_STRONG_SIGNAL_CAPS_AT_SUSPICIOUS",
+        "ML_SUSPICIOUS_SIGNAL": "RULE_ML_SUSPICIOUS_CLASSIFICATION",
+        "SAFE_SOURCE_CONSENSUS": "RULE_VT_AND_ML_SAFE_CONSENSUS",
+        "HYBRID_WEIGHTED_SUSPICIOUS": "RULE_HYBRID_WEIGHTED_SUSPICIOUS",
+        "HYBRID_WEIGHTED_INCONCLUSIVE": "RULE_HYBRID_WEIGHTED_INCONCLUSIVE",
+        "INSUFFICIENT_EVIDENCE": "RULE_INSUFFICIENT_EVIDENCE",
+    }
+    decision_code = str(combined.get("decision_code", "INSUFFICIENT_EVIDENCE"))
+    unknown_reason_codes = []
+    if str(combined.get("classification", "UNKNOWN")).upper() == "UNKNOWN":
+        ml_source = str(ml_result.get("source", "NOT_REPORTED")).upper()
+        vt_provider_status = str(vt_result.get("provider_status", "NOT_REPORTED")).upper()
+        if ml_source in {"MODEL_UNAVAILABLE", "MODEL_ERROR", "MODEL_BUSY", "INVALID_URL", "NOT_APPLICABLE", "NOT_REPORTED"}:
+            unknown_reason_codes.append(f"ML_{ml_source}")
+        if vt_provider_status in {"NOT_CONFIGURED", "ANALYSIS_STALE", "ANALYSIS_DATE_MISSING", "ANALYSIS_DATE_INVALID", "TIMEOUT", "NETWORK_ERROR", "PROVIDER_ERROR", "BUSY", "PRIVACY_BLOCKED", "SUBMISSION_DISABLED", "NOT_APPLICABLE", "NOT_REPORTED"}:
+            unknown_reason_codes.append(f"VT_{vt_provider_status}")
+        if not unknown_reason_codes:
+            unknown_reason_codes.append("NO_PROVIDER_MEETS_A_DECISION_RULE")
+
+    return {
+        "schema_version": "1.0",
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "decision": {
+            "classification": str(combined.get("classification", "UNKNOWN")).upper(),
+            "code": combined.get("decision_code", "INSUFFICIENT_EVIDENCE"),
+            "policy_id": "NABEH_URL_FUSION",
+            "policy_version": URL_FUSION_POLICY_VERSION,
+            "inputs": {
+                "virustotal_status": vt_status,
+                "virustotal_provider_status": vt_result.get("provider_status", "NOT_REPORTED_BY_PROVIDER"),
+                "virustotal_counts": vt_counts,
+                "ml_classification": str(ml_result.get("classification", "UNKNOWN")).upper(),
+                "ml_source": ml_result.get("source", "NOT_REPORTED"),
+                "ml_strong_signals": _get_ml_strong_signals(ml_result),
+            },
+            "thresholds": {
+                "dangerous_min_malicious_engines": VT_DANGEROUS_MIN_ENGINES,
+                "dangerous_with_ml_max_malicious_engines": VT_ML_CORROBORATION_MAX_ENGINES,
+                "suspicious_min_vt_suspicious_engines": VT_MULTIPLE_SUSPICIOUS_MIN,
+                "ml_standalone_dangerous_min_probability": ML_STANDALONE_DANGEROUS_MIN_PROB,
+                "ml_standalone_dangerous_min_strong_signals": ML_STANDALONE_DANGEROUS_MIN_SIGNALS,
+            },
+            "audit": {
+                "rules_applied": [rule_map[decision_code]] if decision_code in rule_map else [],
+                "rules_rejected": [],
+                "decision_reasons": [decision_code] if decision_code in rule_map else [],
+                "audit_status": "EXACT_RULE_MAPPED" if decision_code in rule_map else "DECISION_CODE_NOT_MAPPED",
+            },
+            "unknown": {
+                "is_unknown": bool(unknown_reason_codes),
+                "reason_codes": unknown_reason_codes,
+            },
+        },
+        "sources": {
+            "ml_model": {
+                "status": "COMPLETED" if ml_result.get("source") in {"ML_MODEL", "ML_MODEL_CALIBRATED"} else ml_result.get("source", "UNAVAILABLE_OR_NOT_RUN"),
+                "classification": str(ml_result.get("classification", "UNKNOWN")).upper(),
+                "source": ml_result.get("source", "NOT_REPORTED"),
+                # Never expose the raw LightGBM score as a probability. The
+                # field is populated only by a verified calibration artifact.
+                "phishing_probability": (
+                    ml_result.get("calibrated_phishing_prob")
+                    if ml_probability_status == "CALIBRATED"
+                    else None
+                ),
+                "probability_status": ml_probability_status,
+                "calibration_method": ml_result.get("calibration_method"),
+                "calibration_version": ml_result.get("calibration_version"),
+                "threshold": ml_result.get("threshold"),
+                "strong_signals": _get_ml_strong_signals(ml_result),
+                "feature_attribution": "NOT_AVAILABLE",
+                "role": "SECURITY_SIGNAL_NOT_MODEL_ATTRIBUTION",
+            },
+            "virustotal": {
+                "status": vt_result.get("provider_status", vt_status),
+                "classification": vt_status,
+                "evidence_timestamp": vt_result.get("evidence_timestamp"),
+                "last_analysis_date": vt_result.get("last_analysis_date"),
+                "freshness_reason": vt_result.get("analysis_freshness_reason"),
+                "analysis_data_available": bool(vt_result.get("analysis_data_available", counts_available)),
+                "analysis_stats_available": bool(counts_available),
+                "counts": vt_counts,
+                "scanner_results": scanner_results,
+                "scanner_results_total": scanner_results_total,
+                "scanner_results_truncated": scanner_results_truncated,
+                "scanner_results_omitted": scanner_results_omitted,
+                "error": str(vt_result.get("error"))[:160] if vt_result.get("error") else None,
+                "role": "PROVIDER_FACTS_ONLY",
+            },
+            "explanation": {
+                "provider": explanation.get("provider", "LOCAL_RULES"),
+                "provider_status": explanation.get("provider_status", "NOT_REPORTED"),
+                "fallback_reason": explanation.get("fallback_reason"),
+                "input_truncated": bool(explanation.get("input_truncated", False)),
+                "role": "SUPPORTING_EXPLANATION_NOT_DECISION_SOURCE",
+                "citations": explanation.get("citations", []),
+                "domain_verification": explanation.get("domain_verification", {"status": "NOT_REPORTED", "source": "CURATED_ALLOWLIST"}),
+            },
+        },
+        "url_observations": {
+            "status": observation_status,
+            "items": observations,
+            "meaning": "MEASURED_URL_PROPERTIES_NOT_MODEL_ATTRIBUTIONS",
+        },
+        "limitations": [
+            "NO_MODEL_FEATURE_ATTRIBUTION_AVAILABLE",
+            "INTERNAL_MODEL_AND_WEIGHTED_SCORES_NOT_EXPOSED",
+            "HIDDEN_SCORE_RULES_CANNOT_BE_INDEPENDENTLY_RECOMPUTED_FROM_THIS_CARD",
+            "SCANNER_COUNTS_ARE_NOT_CALIBRATED_PROBABILITIES",
+            "UNDETECTED_MEANS_NO_OPINION_NOT_HARMLESS",
+            "RESULT_APPLIES_TO_SOURCES_AVAILABLE_AT_SCAN_TIME",
+        ],
+    }
+
+
+def _get_ml_strong_signals(ml_result: dict) -> list[str]:
+    """Return an allow-listed set of structural URL signals from the ML stage.
+
+    The fusion policy must never infer structural evidence from the ML label or
+    probability alone.  The predictor supplies these names explicitly; keeping
+    the allow-list here prevents arbitrary provider/model fields from becoming
+    dangerous evidence.
+    """
+    allowed = {
+        "IPV4_HOST",
+        "PUNYCODE_HOST",
+        "AT_SYMBOL",
+        "NONSTANDARD_PORT",
+        "BRAND_IMPERSONATION",
+        "SUSPICIOUS_EXTENSION",
+        "MANY_HYPHENS_DOMAIN",
+        "CREDENTIAL_TERM",
+    }
+    raw = ml_result.get("strong_signals", [])
+    if not isinstance(raw, (list, tuple, set)):
+        return []
+    return sorted({str(item).upper() for item in raw if str(item).upper() in allowed})
+
+
+class ScanPersistenceError(Exception):
+    """Raised when a registered user's scan cannot be persisted completely."""
+
+
+class ScanIdempotencyConflictError(Exception):
+    """Raised when one idempotency key is reused for a different scan input."""
+
+
+class ScanService:
+    @staticmethod
+    async def _find_idempotent_scan(user_id: str, key_hash: str, input_hash: str) -> dict | None:
+        try:
+            result = (
+                supabase.table("scans")
+                .select("id,status,input_hash,classification,analysis_snapshot")
+                .eq("user_id", user_id)
+                .eq("idempotency_key_hash", key_hash)
+                .limit(1)
+                .execute()
+            )
+        except Exception:
+            raise ScanPersistenceError("unable to look up idempotent scan") from None
+        if not result.data:
+            return None
+        row = result.data[0]
+        if not hmac.compare_digest(str(row.get("input_hash") or ""), input_hash):
+            raise ScanIdempotencyConflictError("idempotency key was already used for a different scan input")
+        if row.get("status") != "COMPLETED":
+            raise ScanPersistenceError("existing idempotent scan is not complete")
+        snapshot = row.get("analysis_snapshot")
+        idempotency = snapshot.get("idempotency") if isinstance(snapshot, dict) else None
+        saved_response = idempotency.get("response") if isinstance(idempotency, dict) else None
+        if not isinstance(saved_response, dict):
+            raise ScanPersistenceError("existing idempotent scan has no complete response snapshot")
+        replay = copy.deepcopy(saved_response)
+        replay["scan_id"] = str(row["id"])
+        replay["classification"] = str(row.get("classification") or replay.get("classification") or "UNKNOWN")
+        replay["idempotent_replay"] = True
+        replay["is_guest"] = False
+        if replay.get("evidence_card"):
+            replay["evidence_card"]["scan_id"] = str(row["id"])
+        return replay
+
+    @staticmethod
+    def extract_urls_from_text(text: str) -> list[str]:
+        return extract_web_urls_from_text(text)
+
+    @staticmethod
+    def extract_url_from_text(text: str) -> str:
+        """Backward-compatible first-URL accessor for callers expecting a scalar."""
+        urls = ScanService.extract_urls_from_text(text)
+        return urls[0] if urls else ""
+
+    @staticmethod
+    def analyze_text_phishing(text: str, has_embedded_url: bool = False) -> dict:
+        signals = analyze_message_indicators(text, has_embedded_url=has_embedded_url)
+        text_lower = (text or "").lower()
+        matches = [word for word in ARABIC_PHISHING_KEYWORDS if word in text_lower or word in (text or "")]
+        return {
+            **signals,
+            "keyword_matches": matches,
+            "match_count": len(matches),
+            "source": "SMS_TEXT_INDICATORS",
+        }
+
+    @staticmethod
+    def _merge_text_signal(combined: dict, text_result: dict) -> dict:
+        text_class = text_result.get("classification")
+        if text_class in {"DANGEROUS", "SUSPICIOUS"} and combined.get("classification") in {"SAFE", "UNKNOWN"}:
+            return {
+                "classification": text_class,
+                "confidence": text_result.get("confidence"),
+                "weighted_score": combined.get("weighted_score"),
+                "source": "LOCAL_TEXT_RULES + URL_ANALYSIS",
+            }
+        return combined
+
+    @staticmethod
+    def _enforce_text_safety_floor(combined: dict, text_rules: dict, ai_result: dict) -> dict:
+        """AI may increase a risk verdict but cannot downgrade deterministic evidence."""
+        rank = {"SAFE": 0, "UNKNOWN": 1, "SUSPICIOUS": 2, "DANGEROUS": 3}
+        evidence = [combined or {}, text_rules or {}]
+        baseline = max(
+            (item for item in evidence if str(item.get("classification", "UNKNOWN")).upper() in rank),
+            key=lambda item: rank[str(item.get("classification", "UNKNOWN")).upper()],
+            default={"classification": "UNKNOWN", "confidence": None},
+        )
+        ai = dict(ai_result or {})
+        ai_class = str(ai.get("classification", "UNKNOWN")).upper()
+        base_class = str(baseline.get("classification", "UNKNOWN")).upper()
+        if ai_class not in rank:
+            ai_class = "UNKNOWN"
+        if rank[ai_class] < rank[base_class]:
+            ai["classification"] = base_class
+            ai["confidence"] = baseline.get("confidence")
+        else:
+            ai["classification"] = ai_class
+            try:
+                ai_confidence = float(ai.get("confidence"))
+            except (TypeError, ValueError):
+                ai_confidence = 0.0
+            try:
+                evidence_confidence = float(baseline.get("confidence"))
+            except (TypeError, ValueError):
+                evidence_confidence = 0.0
+            ai["confidence"] = max(0.0, min(1.0, max(ai_confidence, evidence_confidence)))
+        return ai
+
+    @staticmethod
+    def combine_scan_results(vt_result: dict, ml_result: dict) -> dict:
+        """Combine 3-Stage Scan Results (Stage 1: ML, Stage 2: VirusTotal) into an accurate verdict.
+
+        Core security principle: an ML probability alone is never sufficient for
+        DANGEROUS classification.  A calibrated high ML signal may independently
+        produce DANGEROUS only when the predictor also reports at least two
+        explicit structural URL signals, and VirusTotal has not returned a
+        consistent SAFE verdict that directly conflicts with that decision.
+        DANGEROUS requires either:
+          (a) VirusTotal with 3+ malicious engines, OR
+          (b) VirusTotal with 1-2 malicious AND ML corroboration (high confidence), OR
+          (c) ML at a very high threshold AND two strong structural URL signals.
+        """
+        vt_result = vt_result or {}
+        ml_result = ml_result or {}
+        vt_status = str(vt_result.get("status", "UNKNOWN")).upper()
+
+        try:
+            vt_malicious = max(0, int(vt_result.get("malicious", 0) or 0))
+            vt_suspicious = max(0, int(vt_result.get("suspicious", 0) or 0))
+            vt_harmless = max(0, int(vt_result.get("harmless", 0) or 0))
+            vt_total = max(0, int(vt_result.get("total_engines", 0) or 0))
+        except (TypeError, ValueError):
+            vt_malicious = vt_suspicious = vt_harmless = vt_total = 0
+            vt_status = "UNKNOWN"
+
+        vt_counts_consistent = vt_total > 0 and (vt_malicious + vt_suspicious + vt_harmless) <= vt_total
+        vt_status_consistent = not (
+            (vt_status == "SAFE" and (vt_malicious > 0 or vt_suspicious > 0))
+            or (vt_status == "SUSPICIOUS" and vt_malicious == 0 and vt_suspicious == 0)
+            or (vt_status == "DANGEROUS" and vt_malicious < 3)
+        )
+
+        has_vt = (
+            vt_counts_consistent
+            and vt_status_consistent
+            and vt_status in {"SAFE", "SUSPICIOUS", "DANGEROUS"}
+        )
+
+
+        ml_class = str(ml_result.get("classification", "UNKNOWN")).upper()
+        ml_prob = ml_result.get("phishing_prob")
+        try:
+            ml_prob = float(ml_prob)
+            has_ml = ml_class in {"SAFE", "SUSPICIOUS", "DANGEROUS"} and 0.0 <= ml_prob <= 1.0
+        except (TypeError, ValueError):
+            ml_prob, has_ml = None, False
+
+        # ═══════════════════════════════════════════════════════════════════
+        # TIER 1: DANGEROUS — requires STRONG evidence
+        # ═══════════════════════════════════════════════════════════════════
+
+        # Rule 1a: VirusTotal strong consensus (3+ engines flag as malicious)
+        if has_vt and vt_malicious >= VT_DANGEROUS_MIN_ENGINES:
+            # Confidence scales with # of engines
+            confidence = min(0.99, 0.85 + (vt_malicious - 3) * 0.02)
+            return {
+                "classification": "DANGEROUS",
+                "confidence": round(confidence, 4),
+                "weighted_score": 1.0,
+                "decision_code": "VT_STRONG_CONSENSUS",
+                "source": f"VIRUSTOTAL_CONSENSUS ({vt_malicious} engines)",
+            }
+
+        # Rule 1b: VirusTotal moderate (1-2) + ML corroboration at high confidence
+        if has_vt and 1 <= vt_malicious <= VT_ML_CORROBORATION_MAX_ENGINES and has_ml and ml_class == "DANGEROUS" and ml_prob >= ML_DANGEROUS_CORROBORATION_MIN_PROB:
+            # Two independent signals agree
+            confidence = min(0.95, 0.75 + (ml_prob - 0.85) * 1.5)
+            return {
+                "classification": "DANGEROUS",
+                "confidence": round(confidence, 4),
+                "weighted_score": round(ml_prob, 4),
+                "decision_code": "VT_ML_CORROBORATION",
+                "source": f"DANGEROUS_CORROBORATED (VT:{vt_malicious} + ML:{ml_prob:.2f})",
+            }
+
+        # Rule 1c: high-confidence ML plus independent structural URL evidence.
+        # A current, consistent VT SAFE result is treated as a conflict rather
+        # than silently overridden.  UNKNOWN, stale, unavailable, or blocked
+        # VT does not prevent this conservative ML+structure decision.
+        ml_strong_signals = _get_ml_strong_signals(ml_result)
+        vt_safe_conflict = has_vt and vt_status == "SAFE"
+        if (
+            has_ml
+            and ml_class == "DANGEROUS"
+            and ml_prob >= ML_STANDALONE_DANGEROUS_MIN_PROB
+            and len(ml_strong_signals) >= ML_STANDALONE_DANGEROUS_MIN_SIGNALS
+            and not vt_safe_conflict
+        ):
+            return {
+                "classification": "DANGEROUS",
+                "confidence": round(min(0.99, ml_prob), 4),
+                "weighted_score": round(ml_prob, 4),
+                "decision_code": "ML_HIGH_CONFIDENCE_STRUCTURAL",
+                "source": "ML_PLUS_URL_SIGNALS",
+                "confirmation_status": "ML_STRUCTURAL_ONLY",
+                "external_confirmation": "NOT_REQUIRED",
+                "strong_signals": ml_strong_signals,
+            }
+
+        # Preserve an auditable conflict reason when a strong ML result is
+        # contradicted by a consistent clean VirusTotal result.
+        if (
+            vt_safe_conflict
+            and has_ml
+            and ml_class == "DANGEROUS"
+            and ml_prob >= ML_STANDALONE_DANGEROUS_MIN_PROB
+            and len(ml_strong_signals) >= ML_STANDALONE_DANGEROUS_MIN_SIGNALS
+        ):
+            return {
+                "classification": "SUSPICIOUS",
+                "confidence": round(min(0.80, ml_prob * 0.9), 4),
+                "weighted_score": round(ml_prob, 4),
+                "decision_code": "ML_VT_CONFLICT",
+                "source": "ML_HIGH_VT_SAFE_CONFLICT",
+                "strong_signals": ml_strong_signals,
+            }
+
+        # ═══════════════════════════════════════════════════════════════════
+        # TIER 2: SUSPICIOUS — moderate evidence
+        # ═══════════════════════════════════════════════════════════════════
+
+        # Rule 2a: VirusTotal has malicious OR multiple suspicious signals
+        if has_vt and (vt_malicious >= 1 or vt_suspicious >= VT_MULTIPLE_SUSPICIOUS_MIN):
+            return {
+                "classification": "SUSPICIOUS",
+                "confidence": 0.65,
+                "weighted_score": float(ml_prob or 0.5),
+                "decision_code": "VT_SIGNAL",
+                "source": f"VIRUSTOTAL_SIGNAL (M:{vt_malicious}, S:{vt_suspicious})",
+            }
+
+        # Rule 2b: ML strong signal alone → maximum SUSPICIOUS (never DANGEROUS)
+        if has_ml and ml_class == "DANGEROUS" and ml_prob >= ML_STRONG_SIGNAL_MIN_PROB:
+            return {
+                "classification": "SUSPICIOUS",
+                "confidence": round(min(0.75, ml_prob * 0.9), 4),
+                "weighted_score": round(ml_prob, 4),
+                "decision_code": "ML_STRONG_SIGNAL_ONLY",
+                "source": "ML_SIGNAL_ONLY",
+            }
+
+        # Rule 2c: ML suspicious signal
+        if has_ml and ml_class == "SUSPICIOUS":
+            return {
+                "classification": "SUSPICIOUS",
+                "confidence": round(float(ml_prob or 0.55) * 0.8, 4),
+                "weighted_score": round(float(ml_prob or 0.5), 4),
+                "decision_code": "ML_SUSPICIOUS_SIGNAL",
+                "source": "ML_SUSPICIOUS_SIGNAL",
+            }
+
+        # ═══════════════════════════════════════════════════════════════════
+        # TIER 3: SAFE — requires positive evidence from both sources
+        # ═══════════════════════════════════════════════════════════════════
+
+        # Rule 3a: Both VT and ML agree on SAFE
+        if has_vt and has_ml and vt_status == "SAFE" and ml_class == "SAFE":
+            # Confidence = average of both
+            vt_conf = float(vt_result.get("confidence") or 0.85)
+            ml_conf = 1.0 - ml_prob  # phishing_prob = 0 → confidence = 1
+            confidence = min(0.95, (vt_conf + ml_conf) / 2)
+            return {
+                "classification": "SAFE",
+                "confidence": round(confidence, 4),
+                "weighted_score": round(ml_prob, 4),
+                "decision_code": "SAFE_SOURCE_CONSENSUS",
+                "source": "HYBRID_CONSENSUS_SAFE",
+            }
+
+        # ═══════════════════════════════════════════════════════════════════
+        # TIER 4: Hybrid weighted score (fallback for edge cases)
+        # ═══════════════════════════════════════════════════════════════════
+        if has_vt and has_ml:
+            vt_score = min(1.0, (vt_malicious + (vt_suspicious * 0.5)) / max(1.0, vt_total * 0.10))
+            score = (0.55 * vt_score) + (0.45 * ml_prob)
+
+            # The weighted fallback is not a calibrated proof threshold. It may
+            # only raise caution; DANGEROUS requires the explicit rules above,
+            # and SAFE requires positive agreement from a rule above.
+            classification = "SUSPICIOUS" if score >= HYBRID_SUSPICIOUS_THRESHOLD else "UNKNOWN"
+
+            # Confidence reflects the score, but never reaches 0.99 from weighted alone
+            if classification == "UNKNOWN":
+                confidence = None
+            else:
+                confidence = round(min(0.88, 0.60 + score * 0.3), 4)
+
+            return {
+                "classification": classification,
+                "confidence": round(confidence, 4) if confidence is not None else None,
+                "weighted_score": round(score, 4),
+                "decision_code": "HYBRID_WEIGHTED_SUSPICIOUS" if classification == "SUSPICIOUS" else "HYBRID_WEIGHTED_INCONCLUSIVE",
+                "source": "HYBRID_WEIGHTED",
+            }
+
+        # ═══════════════════════════════════════════════════════════════════
+        # TIER 5: Insufficient evidence → UNKNOWN (never fabricate)
+        # ═══════════════════════════════════════════════════════════════════
+        return {
+            "classification": "UNKNOWN",
+            "confidence": None,
+            "weighted_score": None,
+            "decision_code": "INSUFFICIENT_EVIDENCE",
+            "source": "INSUFFICIENT_EVIDENCE",
+        }
+
+    @staticmethod
+    def _local_explanation(classification: str, language: str) -> dict:
+        english = language == "en"
+        text = {
+            "SAFE": ("لم تُرصد مؤشرات خطر في الأدلة المتاحة؛ هذا لا يثبت أن الرابط آمن." if not english else "No risk indicators were reported by the available evidence; this does not prove the URL is safe."),
+            "SUSPICIOUS": ("ظهرت مؤشرات تستدعي الحذر والتحقق من المصدر." if not english else "Indicators require caution and source verification."),
+            "DANGEROUS": ("ظهرت مؤشرات خطر قوية؛ لا تفتح الرابط ولا تشارك بياناتك." if not english else "Strong risk indicators were found; do not open or share data."),
+            "UNKNOWN": ("تعذر التحقق محلياً؛ لا تعتبر النتيجة آمنة." if not english else "Local verification was inconclusive; do not treat this as safe."),
+        }.get(classification, "تعذر التحقق محلياً.")
+        recommendation = {
+            "SAFE": "تابع بحذر." if not english else "Continue cautiously.",
+            "SUSPICIOUS": "تحقق من المصدر قبل التفاعل." if not english else "Verify the source before interacting.",
+            "DANGEROUS": "تجنب فتح الرابط أو إدخال بياناتك." if not english else "Avoid opening the link or entering data.",
+            "UNKNOWN": "أعد المحاولة لاحقاً أو تحقق عبر مصدر موثوق." if not english else "Try again later or verify with a trusted source.",
+        }.get(classification, "توخ الحذر." if not english else "Exercise caution.")
+        return {"summary": text, "reasons": [], "recommendation": recommendation, "provider": "LOCAL_RULES"}
+
+    @classmethod
+    def _local_sms_fallback(cls, text_content: str, extracted_url: str, combined: dict, language: str, provider: str) -> dict:
+        text_result = cls.analyze_text_phishing(text_content, bool(extracted_url))
+        rank = {"SAFE": 0, "UNKNOWN": 1, "SUSPICIOUS": 2, "DANGEROUS": 3}
+        candidates = [text_result.get("classification", "UNKNOWN")]
+        if extracted_url:
+            candidates.append(combined.get("classification", "UNKNOWN"))
+        classification = max(
+            (str(item).upper() for item in candidates if str(item).upper() in rank),
+            key=lambda item: rank[item],
+            default="UNKNOWN",
+        )
+        explanation = cls._local_explanation(classification, language)
+        explanation.update({
+            "classification": classification,
+            "confidence": None,
+            "fraud_probability": None,
+            "urgency_pressure_score": None,
+            "credential_theft_score": None,
+            "identity_spoofing_score": None,
+            "lure_type": "إشارات تستدعي الحذر" if classification == "SUSPICIOUS" and language == "ar" else "Indicators require caution" if classification == "SUSPICIOUS" else "غير محسوم" if language == "ar" else "Inconclusive",
+            "authenticity_status": "غير متحقق" if language == "ar" else "Unverified",
+            "limitations": ["القواعد المحلية لا تثبت سلامة الرسالة أو هوية مرسلها." if language == "ar" else "Local rules cannot verify message safety or sender identity."],
+            "provider": provider,
+        })
+        if text_result.get("indicators"):
+            explanation["reasons"] = [
+                ("إشارات مرصودة: " if language == "ar" else "Observed signals: ") + ", ".join(text_result["indicators"])
+            ]
+        return explanation
+
+    @classmethod
+    async def process_url_scan(cls, target_url: str, language: str = "ar") -> dict:
+        """Standalone 3-Stage URL Link Scanner (ML -> VirusTotal -> Gemini Research)."""
+        target_url = normalize_web_url(target_url)
+        operation_id = resource_id(target_url)
+        started = time.perf_counter()
+        log_event(logger, logging.INFO, "scan_started", operation_id=operation_id, input_type="URL", mode="url")
+        deadline = asyncio.get_running_loop().time() + settings.SCAN_TOTAL_TIMEOUT_SECONDS
+        async def run_ml():
+            ml_started = time.perf_counter()
+            log_event(logger, logging.INFO, "scan_ml_started", operation_id=operation_id, provider="ML_MODEL", mode="url")
+            try:
+                remaining = max(0.0, deadline - asyncio.get_running_loop().time())
+                res = await predict_url_async(
+                    target_url,
+                    timeout=min(settings.SCAN_ML_TIMEOUT_SECONDS, remaining),
+                    predictor_fn=predict_url,
+                )
+                event = "scan_ml_succeeded" if res.get("source") == "ML_MODEL" else "scan_ml_completed_with_limited_evidence"
+                log_event(logger, logging.INFO, event, operation_id=operation_id, provider="ML_MODEL", classification=res.get("classification"), source=res.get("source"), duration_ms=elapsed_ms(ml_started))
+                return res
+            except Exception as error:
+                log_event(logger, logging.ERROR, "scan_ml_failed", operation_id=operation_id, provider="ML_MODEL", error_type=safe_error(error), error_code="MODEL_ERROR", duration_ms=elapsed_ms(ml_started))
+                return {"classification": "UNKNOWN", "confidence": None, "source": "ML_ERROR"}
+
+        async def run_vt():
+            vt_started = time.perf_counter()
+            log_event(logger, logging.INFO, "scan_virustotal_started", operation_id=operation_id, provider="VIRUSTOTAL", mode="url")
+            try:
+                remaining = max(0.0, deadline - asyncio.get_running_loop().time())
+                res = await asyncio.wait_for(check_url_virustotal(target_url), timeout=remaining)
+                log_event(logger, logging.INFO, "scan_virustotal_succeeded", operation_id=operation_id, provider="VIRUSTOTAL", status=res.get("status"), malicious=res.get("malicious", 0), suspicious=res.get("suspicious", 0), total_engines=res.get("total_engines", 0), duration_ms=elapsed_ms(vt_started))
+                return res
+            except asyncio.TimeoutError:
+                log_event(logger, logging.WARNING, "scan_virustotal_timeout", operation_id=operation_id, provider="VIRUSTOTAL", error_code="SCAN_DEADLINE_EXCEEDED", duration_ms=elapsed_ms(vt_started))
+                return {"status": "UNKNOWN", "provider_status": "TIMEOUT", "error": "SCAN_DEADLINE_EXCEEDED"}
+            except Exception as error:
+                log_event(logger, logging.ERROR, "scan_virustotal_failed", operation_id=operation_id, provider="VIRUSTOTAL", error_type=safe_error(error), error_code="VIRUSTOTAL_NETWORK_ERROR", duration_ms=elapsed_ms(vt_started))
+                return {"status": "UNKNOWN", "provider_status": "NETWORK_ERROR", "error": "VIRUSTOTAL_UNAVAILABLE"}
+
+        ml_result, vt_result = await asyncio.gather(run_ml(), run_vt())
+
+
+        combined = cls.combine_scan_results(vt_result, ml_result)
+        log_event(logger, logging.INFO, "scan_fusion_completed", operation_id=operation_id, provider="LOCAL_RULES", classification=combined.get("classification"), source=combined.get("source"))
+        combined["evidence"] = {"ml": ml_result, "virustotal": vt_result, "input_type": "URL"}
+
+        remaining = max(0.0, deadline - asyncio.get_running_loop().time())
+        try:
+            ai_enabled = await asyncio.wait_for(
+                asyncio.to_thread(setting_enabled_fail_closed, "features.ai_explanations_enabled"), timeout=remaining
+            )
+        except asyncio.TimeoutError:
+            ai_enabled = False
+            logger.warning("scan_total_deadline_settings")
+        if not ai_enabled:
+            explanation = cls._local_explanation(combined["classification"], language)
+            explanation["provider"] = "LOCAL_FEATURE_DISABLED"
+            explanation["provider_status"] = "DISABLED"
+            explanation["fallback_reason"] = "AI_FEATURE_DISABLED"
+            explanation["input_truncated"] = False
+            log_event(logger, logging.WARNING, "scan_fallback_selected", operation_id=operation_id, provider="LOCAL_RULES", fallback_reason="AI_FEATURE_DISABLED")
+        else:
+            try:
+                explanation = await asyncio.wait_for(
+                    generate_explanation(
+                        input_value=target_url,
+                        classification=combined["classification"],
+                        evidence=combined.get("evidence", {}),
+                        language=language,
+                    ),
+                    timeout=max(0.0, min(settings.SCAN_AI_TIMEOUT_SECONDS, deadline - asyncio.get_running_loop().time())),
+                )
+            except asyncio.TimeoutError:
+                log_event(logger, logging.WARNING, "scan_gemini_timeout", operation_id=operation_id, provider="GEMINI", error_code="GEMINI_TIMEOUT")
+                explanation = cls._local_explanation(combined["classification"], language)
+                explanation["provider"] = "LOCAL_TIMEOUT_FALLBACK"
+                explanation["provider_status"] = "FALLBACK"
+                explanation["fallback_reason"] = "GEMINI_TIMEOUT"
+                explanation["input_truncated"] = len(target_url) > 300
+            except Exception as error:
+                log_event(logger, logging.WARNING, "scan_gemini_failed", operation_id=operation_id, provider="GEMINI", error_type=safe_error(error), error_code="GEMINI_PROVIDER_ERROR")
+                explanation = cls._local_explanation(combined["classification"], language)
+                explanation["provider"] = "LOCAL_ERROR_FALLBACK"
+                explanation["provider_status"] = "FALLBACK"
+                explanation["fallback_reason"] = "GEMINI_PROVIDER_ERROR"
+                explanation["input_truncated"] = len(target_url) > 300
+
+        log_event(logger, logging.INFO, "scan_succeeded", operation_id=operation_id, classification=combined["classification"], provider=explanation.get("provider"), duration_ms=elapsed_ms(started), mode="url")
+        evidence_card = _build_url_evidence_card(target_url, combined, ml_result, vt_result, explanation)
+
+        return {
+            "scan_kind": "URL_LINK",
+            "input_type": "URL",
+            "input_value": target_url,
+            "extracted_url": target_url,
+            "classification": combined["classification"],
+            "confidence": None,
+            "source": combined["source"],
+            "stages": {
+                "stage1_ml": {
+                    "name": "Stage 1: LightGBM ML Model Analysis",
+                    "classification": ml_result.get("classification", "UNKNOWN"),
+                    "confidence": None,
+                    "phishing_prob": None,
+                    "source": ml_result.get("source", "N/A"),
+                },
+                "stage2_virustotal": {
+                    "name": "Stage 2: VirusTotal Engine Intelligence",
+                    "status": vt_result.get("status", "UNKNOWN"),
+                    "provider_status": vt_result.get("provider_status", "NOT_REPORTED_BY_PROVIDER"),
+                    "malicious": vt_result.get("malicious"),
+                    "suspicious": vt_result.get("suspicious"),
+                    "harmless": vt_result.get("harmless"),
+                    "total_engines": vt_result.get("total_engines"),
+                },
+                "stage3_gemini": {
+                    "name": "Stage 3: Gemini AI URL Threat Research",
+                    "provider": explanation.get("provider", "LOCAL_RULES"),
+                    "provider_status": explanation.get("provider_status", "NOT_REPORTED"),
+                    "fallback_reason": explanation.get("fallback_reason"),
+                    "classification": explanation.get("classification", "UNKNOWN"),
+                    "summary": explanation.get("summary", ""),
+                    "recommendation": explanation.get("recommendation", ""),
+                },
+            },
+            "explanation": explanation,
+            "virustotal": vt_result,
+            "evidence_card": evidence_card,
+            "ml_model": {
+                "classification": ml_result.get("classification", "UNKNOWN"),
+                "confidence": None,
+                "phishing_prob": None,
+                "source": ml_result.get("source", "N/A"),
+            },
+        }
+
+    @classmethod
+    async def process_text_scan(cls, text_content: str, language: str = "ar") -> dict:
+        """Analyze message signals, audit embedded links, and use Gemini when enabled."""
+        operation_id = resource_id(text_content)
+        started = time.perf_counter()
+        log_event(logger, logging.INFO, "scan_started", operation_id=operation_id, input_type="TEXT", mode="sms")
+        deadline = asyncio.get_running_loop().time() + settings.SCAN_TOTAL_TIMEOUT_SECONDS
+        explicit_urls = cls.extract_urls_from_text(text_content)
+        raw_defanged_urls = extract_defanged_urls_from_text(text_content)
+        defanged_urls = []
+        unscanned_url_candidates = []
+        seen_urls = set(explicit_urls)
+        for raw_defanged_url in raw_defanged_urls:
+            try:
+                normalized_defanged_url = normalize_defanged_url(raw_defanged_url)
+            except ValueError:
+                unscanned_url_candidates.append(raw_defanged_url)
+                continue
+            if normalized_defanged_url not in seen_urls:
+                seen_urls.add(normalized_defanged_url)
+                defanged_urls.append(normalized_defanged_url)
+        all_extracted_urls = explicit_urls + defanged_urls
+        extracted_urls = all_extracted_urls
+        unscanned_urls = []
+        message_input_truncated = len(text_content or "") > 600
+        unscanned_url_count = len(unscanned_urls)
+        unscanned_link_count = unscanned_url_count + len(unscanned_url_candidates)
+        coverage_reasons = []
+        if message_input_truncated:
+            coverage_reasons.append("MESSAGE_TRUNCATED_FOR_GEMINI")
+        if unscanned_url_candidates:
+            coverage_reasons.append("DEFANGED_URL_NOT_NORMALIZED")
+        analysis_coverage = "PARTIAL" if coverage_reasons else "FULL"
+        log_event(logger, logging.INFO, "scan_validation_succeeded", operation_id=operation_id, input_type="TEXT", mode="sms", links_detected=len(all_extracted_urls), links_scanned=len(extracted_urls))
+        extracted_url = extracted_urls[0] if extracted_urls else ""
+        semaphore = asyncio.Semaphore(2)
+        ml_semaphore = asyncio.Semaphore(2)
+
+        async def analyze_embedded_url(url: str) -> dict:
+            async def run_ml() -> dict:
+                try:
+                    async with ml_semaphore:
+                        remaining_for_ml = max(0.0, deadline - asyncio.get_running_loop().time())
+                        return await predict_url_async(
+                            url,
+                            timeout=min(settings.SCAN_ML_TIMEOUT_SECONDS, remaining_for_ml),
+                            predictor_fn=predict_url,
+                        )
+                except Exception:
+                    log_event(logger, logging.ERROR, "scan_ml_failed", operation_id=operation_id, provider="ML_MODEL", error_code="MODEL_ERROR")
+                    return {"classification": "UNKNOWN", "confidence": None, "source": "ML_ERROR"}
+
+            async def run_vt() -> dict:
+                async with semaphore:
+                    remaining = max(0.0, deadline - asyncio.get_running_loop().time())
+                    if remaining <= 0:
+                        return {"status": "UNKNOWN", "error": "SCAN_DEADLINE_EXCEEDED"}
+                    try:
+                        return await asyncio.wait_for(
+                            check_url_virustotal(url), timeout=min(3.0, remaining)
+                        )
+                    except asyncio.TimeoutError:
+                        log_event(logger, logging.WARNING, "scan_virustotal_timeout", operation_id=operation_id, provider="VIRUSTOTAL", error_code="SCAN_DEADLINE_EXCEEDED")
+                        return {"status": "UNKNOWN", "error": "SCAN_DEADLINE_EXCEEDED"}
+                    except Exception as error:
+                        log_event(logger, logging.ERROR, "scan_virustotal_failed", operation_id=operation_id, provider="VIRUSTOTAL", error_type=safe_error(error), error_code="VIRUSTOTAL_NETWORK_ERROR")
+                        return {"status": "UNKNOWN", "error": "VIRUSTOTAL_UNAVAILABLE"}
+
+            ml, vt = await asyncio.gather(run_ml(), run_vt())
+            return {"url": url, "ml": ml, "virustotal": vt, "combined": cls.combine_scan_results(vt, ml)}
+
+        embedded_url_analyses = await asyncio.gather(
+            *(analyze_embedded_url(url) for url in extracted_urls)
+        )
+        selected_url = None
+        if embedded_url_analyses:
+            rank = {"SAFE": 0, "UNKNOWN": 1, "SUSPICIOUS": 2, "DANGEROUS": 3}
+            strongest = max(
+                embedded_url_analyses,
+                key=lambda item: rank.get(str(item["combined"].get("classification", "UNKNOWN")).upper(), 1),
+            )
+            combined = dict(strongest["combined"])
+            selected_url = strongest["url"]
+            if unscanned_link_count and combined.get("classification") == "SAFE":
+                combined.update(classification="UNKNOWN", confidence=None, source="PARTIAL_LINK_ANALYSIS")
+            elif len(embedded_url_analyses) > 1:
+                combined["source"] = "MULTIPLE_EMBEDDED_URLS"
+            # Keep public evidence aligned with the URL that produced the
+            # strongest verdict. Using the first URL here could contradict the
+            # final classification when a later embedded URL was dangerous.
+            vt_result = strongest["virustotal"]
+            ml_result = strongest["ml"]
+        else:
+            combined = {
+                "classification": "UNKNOWN",
+                "confidence": None,
+                "weighted_score": None,
+                "source": "TEXT_ONLY",
+            }
+            vt_result = {"status": "NOT_APPLICABLE", "total_engines": 0}
+            ml_result = {"classification": "UNKNOWN", "source": "NOT_APPLICABLE"}
+
+        evidence = {
+            "ml": ml_result,
+            "virustotal": vt_result,
+            "input_type": "TEXT",
+            "extracted_url": extracted_url,
+            "selected_url": selected_url,
+            "embedded_url_analyses": [
+                {
+                    "url": item["url"],
+                    "classification": item["combined"].get("classification", "UNKNOWN"),
+                    "source": item["combined"].get("source", "UNKNOWN"),
+                    "ml": item["ml"],
+                    "virustotal": item["virustotal"],
+                }
+                for item in embedded_url_analyses
+            ],
+            "unscanned_url_count": unscanned_link_count,
+            "url_combined_verdict": combined,
+        }
+
+        # Gemini is optional and can be disabled centrally without disabling local analysis.
+        remaining = max(0.0, deadline - asyncio.get_running_loop().time())
+        try:
+            ai_enabled = await asyncio.wait_for(
+                asyncio.to_thread(setting_enabled_fail_closed, "features.ai_explanations_enabled"), timeout=remaining
+            )
+        except asyncio.TimeoutError:
+            ai_enabled = False
+            logger.warning("scan_total_deadline_settings")
+        if not ai_enabled:
+            ai_analysis = cls._local_sms_fallback(
+                text_content, selected_url or extracted_url, combined, language, "LOCAL_FEATURE_DISABLED"
+            )
+            ai_analysis.update(provider_status="DISABLED", fallback_reason="AI_FEATURE_DISABLED", input_truncated=message_input_truncated)
+            log_event(logger, logging.WARNING, "scan_gemini_fallback_selected", operation_id=operation_id, provider="LOCAL_RULES", fallback_reason="AI_FEATURE_DISABLED", mode="sms")
+        else:
+            try:
+                ai_analysis = await asyncio.wait_for(
+                    analyze_sms_message(
+                        text_content=text_content,
+                        extracted_url=selected_url or extracted_url,
+                        evidence=evidence,
+                        language=language,
+                    ),
+                    timeout=max(0.0, min(settings.SCAN_AI_TIMEOUT_SECONDS, deadline - asyncio.get_running_loop().time())),
+                )
+            except asyncio.TimeoutError:
+                log_event(logger, logging.WARNING, "scan_gemini_timeout", operation_id=operation_id, provider="GEMINI", error_code="GEMINI_TIMEOUT", mode="sms")
+                ai_analysis = cls._local_sms_fallback(
+                    text_content, selected_url or extracted_url, combined, language, "LOCAL_TIMEOUT_FALLBACK"
+                )
+                ai_analysis.update(provider_status="FALLBACK", fallback_reason="GEMINI_TIMEOUT", input_truncated=len(text_content or "") > 600)
+            except Exception as error:
+                log_event(logger, logging.WARNING, "scan_gemini_failed", operation_id=operation_id, provider="GEMINI", error_type=safe_error(error), error_code="GEMINI_PROVIDER_ERROR", mode="sms")
+                ai_analysis = cls._local_sms_fallback(
+                    text_content, selected_url or extracted_url, combined, language, "LOCAL_ERROR_FALLBACK"
+                )
+                ai_analysis.update(provider_status="FALLBACK", fallback_reason="GEMINI_PROVIDER_ERROR", input_truncated=len(text_content or "") > 600)
+
+        # Apply the same independent, curated-domain check to Gemini and local fallbacks.
+        ai_analysis = _sanitize_official_portal_url(
+            ai_analysis, text_content, selected_url or extracted_url, language, allow_reference=True
+        )
+        local_text = cls.analyze_text_phishing(text_content, bool(extracted_url))
+        ai_class = str(ai_analysis.get("classification", "UNKNOWN")).upper()
+        if ai_class == "SAFE":
+            # Clean text/link signals cannot authenticate the SMS sender or claim.
+            ai_analysis["classification"] = "UNKNOWN"
+            ai_analysis["confidence"] = None
+            ai_analysis["fraud_probability"] = None
+            ai_analysis["authenticity_status"] = "غير متحقق" if language == "ar" else "Unverified"
+            ai_analysis.setdefault("reasons", []).append(
+                "فحص الرابط أو غياب المؤشرات لا يثبت أصالة الرسالة أو هوية مرسلها." if language == "ar" else "A clean link or absent indicators cannot verify the SMS sender or authenticity."
+            )
+            ai_class = "UNKNOWN"
+        if ai_class == "DANGEROUS" and combined.get("classification") != "DANGEROUS":
+            # An LLM-only SMS judgment is insufficient for the highest-severity label.
+            ai_analysis["classification"] = "SUSPICIOUS"
+            ai_analysis["confidence"] = None
+            ai_analysis["fraud_probability"] = None
+            ai_analysis["authenticity_status"] = "غير متحقق" if language == "ar" else "Unverified"
+            ai_analysis.setdefault("reasons", []).append(
+                "لم يُرفع الحكم إلى خطير اعتماداً على Gemini وحده." if language == "ar" else "Gemini alone cannot establish a dangerous verdict."
+            )
+        safety_evidence = combined if extracted_url else local_text
+        if str(safety_evidence.get("classification", "UNKNOWN")).upper() == "SAFE":
+            safety_evidence = {**safety_evidence, "classification": "UNKNOWN", "confidence": None}
+        ai_analysis = cls._enforce_text_safety_floor(safety_evidence, local_text, ai_analysis)
+        classification = ai_analysis.get("classification", combined.get("classification", "UNKNOWN"))
+        input_truncated = bool(ai_analysis.get("input_truncated", False) or message_input_truncated)
+        analysis_coverage = "PARTIAL" if (coverage_reasons or input_truncated) else "FULL"
+        # This SMS task has no independently calibrated probability model.
+        confidence = None
+        fraud_prob = None
+        log_event(logger, logging.INFO, "scan_succeeded", operation_id=operation_id, input_type="TEXT", mode="sms", classification=classification, provider=ai_analysis.get("provider"), links_scanned=len(embedded_url_analyses), links_not_scanned=unscanned_link_count, duration_ms=elapsed_ms(started))
+
+        explanation = {
+            "summary": ai_analysis.get("summary", ""),
+            "reasons": ai_analysis.get("reasons", []),
+            "recommendation": ai_analysis.get("recommendation", ""),
+            "provider": ai_analysis.get("provider", "GEMINI_AI"),
+            "provider_status": ai_analysis.get("provider_status", "NOT_REPORTED"),
+            "fallback_reason": ai_analysis.get("fallback_reason"),
+            "input_truncated": input_truncated,
+            "analysis_coverage": analysis_coverage,
+            "coverage_reasons": coverage_reasons,
+            "message_characters": len(text_content or ""),
+            "gemini_characters_analyzed": min(len(text_content or ""), 600),
+            "claimed_sender": ai_analysis.get("claimed_sender", "جهة غير محددة"),
+            "official_domain": ai_analysis.get("official_domain", "غير متاح"),
+            "official_portal_url": ai_analysis.get("official_portal_url", "غير متاح"),
+            "claim_verdict_explanation": ai_analysis.get("claim_verdict_explanation", ""),
+            "action_plan_steps": ai_analysis.get("action_plan_steps", []),
+            "lure_type": ai_analysis.get("lure_type", "غير محدد"),
+            "authenticity_status": ai_analysis.get("authenticity_status", "غير متحقق" if language == "ar" else "Unverified"),
+            "citations": ai_analysis.get("citations", []),
+            "domain_verification": ai_analysis.get("domain_verification", {"status": "NOT_REPORTED", "source": "CURATED_ALLOWLIST"}),
+            "claimed_entity": ai_analysis.get("claimed_entity"),
+            "claim_status": ai_analysis.get("claim_status", "UNKNOWN"),
+            "portal_source": ai_analysis.get("portal_source"),
+            "search_attempted": bool(ai_analysis.get("search_attempted", False)),
+            "search_status": ai_analysis.get("search_status", "NOT_REPORTED"),
+            "source_quality": ai_analysis.get("source_quality", "UNKNOWN"),
+            "limitations": ai_analysis.get("limitations", []),
+            "fraud_probability": fraud_prob,
+            "calibration_status": "NOT_CALIBRATED",
+            "urgency_pressure_score": None,
+            "credential_theft_score": None,
+            "identity_spoofing_score": None,
+        }
+
+        sms_evidence_card = {
+            "schema_version": "1.0",
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "decision": {
+                "classification": str(classification).upper(),
+                "source": ai_analysis.get("provider", "LOCAL_RULES"),
+                "decision_code": "SMS_CONSERVATIVE_TRIAGE",
+                "decision_reasons": [
+                    "AI_EXPLANATION_SUPPORTING_ONLY",
+                    "SMS_SENDER_IDENTITY_NOT_VERIFIED",
+                ],
+                "decision_role": "CONSERVATIVE_SMS_TRIAGE_NOT_AUTHENTICITY_PROOF",
+            },
+            "coverage": {
+                "status": analysis_coverage,
+                "reasons": coverage_reasons,
+                "message_characters": len(text_content or ""),
+                "gemini_characters_analyzed": min(len(text_content or ""), 600),
+                "calibration_status": "NOT_CALIBRATED",
+                "links_detected": len(all_extracted_urls) + len(unscanned_url_candidates),
+                "links_scanned": len(embedded_url_analyses),
+                "links_not_scanned": unscanned_link_count,
+            },
+            "message_observations": {
+                "has_embedded_url": bool(all_extracted_urls),
+                "text_indicators": local_text.get("indicators", []),
+                "input_digest": resource_id(text_content),
+            },
+            "links": [
+                {
+                    "url": item["url"],
+                    "classification": item["combined"].get("classification", "UNKNOWN"),
+                    "ml_source": item["ml"].get("source", "N/A"),
+                    "virustotal_status": item["virustotal"].get("status", "UNKNOWN"),
+                    "provider_status": item["virustotal"].get("provider_status", "NOT_REPORTED_BY_PROVIDER"),
+                }
+                for item in embedded_url_analyses
+            ],
+            "sources": {
+                "ml_model": {"status": ml_result.get("source", "NOT_RUN"), "classification": ml_result.get("classification", "UNKNOWN"), "role": "URL_LINK_SIGNAL_ONLY"},
+                "virustotal": {"status": vt_result.get("provider_status", vt_result.get("status", "NOT_RUN")), "classification": vt_result.get("status", "UNKNOWN"), "malicious": vt_result.get("malicious", 0), "suspicious": vt_result.get("suspicious", 0), "total_engines": vt_result.get("total_engines", 0), "freshness_reason": vt_result.get("analysis_freshness_reason", vt_result.get("freshness_reason")), "role": "PROVIDER_FACTS_ONLY"},
+                "gemini": {"provider": ai_analysis.get("provider", "NOT_RUN"), "status": ai_analysis.get("provider_status", "NOT_REPORTED"), "fallback_reason": ai_analysis.get("fallback_reason"), "input_truncated": input_truncated, "search_attempted": bool(ai_analysis.get("search_attempted", False)), "search_status": ai_analysis.get("search_status", "NOT_REPORTED"), "source_quality": ai_analysis.get("source_quality", "UNKNOWN"), "citations": ai_analysis.get("citations", []), "role": "SUPPORTING_EXPLANATION_NOT_DECISION_SOURCE"},
+                "domain_verification": ai_analysis.get("domain_verification", {"status": "NOT_REPORTED", "source": "CURATED_ALLOWLIST"}),
+                "calibration_status": "NOT_CALIBRATED",
+            },
+            "limitations": [
+                "SMS_SENDER_IDENTITY_NOT_VERIFIED",
+                "NO_CALIBRATED_SMS_PROBABILITY",
+                "UNSCANNED_OR_DEFANGED_LINKS_NOT_VERDICTED",
+                "GROUNDING_SOURCES_ARE_SUPPORTING_CONTEXT_NOT_AUTHENTICATION",
+            ],
+        }
+
+        return {
+            "scan_kind": "SMS_TEXT",
+            "input_type": "TEXT",
+            "input_value": text_content,
+            "analysis_coverage": analysis_coverage,
+            "coverage_reasons": coverage_reasons,
+            "message_characters": len(text_content or ""),
+            "gemini_characters_analyzed": min(len(text_content or ""), 600),
+            "extracted_url": extracted_url or None,
+            "selected_url": selected_url,
+            "extracted_urls": all_extracted_urls,
+            "unscanned_urls": unscanned_urls,
+            "unscanned_url_candidates": unscanned_url_candidates,
+            "links_scanned_count": len(embedded_url_analyses),
+            "links_not_scanned_count": unscanned_link_count,
+            "embedded_url_analyses": [
+                {
+                    "url": item["url"],
+                    "classification": item["combined"].get("classification", "UNKNOWN"),
+                    "source": item["combined"].get("source", "UNKNOWN"),
+                    "ml_classification": item["ml"].get("classification", "UNKNOWN"),
+                    "ml_source": item["ml"].get("source", "N/A"),
+                    "virustotal": item["virustotal"],
+                }
+                for item in embedded_url_analyses
+            ],
+            "classification": classification,
+            "confidence": confidence,
+            "fraud_probability": fraud_prob,
+            "calibration_status": "NOT_CALIBRATED",
+            "source": ai_analysis.get("provider", "GEMINI_AI"),
+            "text_analysis": {
+                "has_embedded_url": bool(extracted_url),
+                "extracted_url": extracted_url or None,
+                "extracted_urls": all_extracted_urls,
+                "links_scanned_count": len(embedded_url_analyses),
+                "links_not_scanned_count": unscanned_link_count,
+                "analysis_coverage": analysis_coverage,
+                "coverage_reasons": coverage_reasons,
+                "message_characters": len(text_content or ""),
+                "gemini_characters_analyzed": min(len(text_content or ""), 600),
+                "lure_type": ai_analysis.get("lure_type", ""),
+                "fraud_probability": fraud_prob,
+            },
+            "stages": {
+                "stage1_text_nlp": {
+                    "name": "Stage 1: Gemini AI SMS Context & Intent Analysis",
+                    "classification": classification,
+                    "confidence": confidence,
+                    "fraud_probability": fraud_prob,
+                    "lure_type": ai_analysis.get("lure_type", "N/A"),
+                    "source": ai_analysis.get("provider", "GEMINI_AI"),
+                },
+                "stage2_link_audit": {
+                    "name": "Stage 2: Embedded Link Security Audit",
+                    "status": vt_result.get("status", "NOT_APPLICABLE"),
+                    "malicious": vt_result.get("malicious", 0),
+                    "suspicious": vt_result.get("suspicious", 0),
+                    "total_engines": vt_result.get("total_engines", 0),
+                    "urls_scanned_count": len(embedded_url_analyses),
+                    "urls_not_scanned_count": unscanned_link_count,
+                    "analysis_coverage": analysis_coverage,
+                    "coverage_reasons": coverage_reasons,
+                    "results": [
+                        {
+                            "url": item["url"],
+                            "classification": item["combined"].get("classification", "UNKNOWN"),
+                            "source": item["combined"].get("source", "UNKNOWN"),
+                            "virustotal_status": item["virustotal"].get("status", "UNKNOWN"),
+                            "virustotal_provider_status": item["virustotal"].get("provider_status", "NOT_REPORTED_BY_PROVIDER"),
+                            "malicious": item["virustotal"].get("malicious"),
+                            "suspicious": item["virustotal"].get("suspicious"),
+                            "harmless": item["virustotal"].get("harmless"),
+                            "total_engines": item["virustotal"].get("total_engines"),
+                            "ml_classification": item["ml"].get("classification", "UNKNOWN"),
+                            "ml_source": item["ml"].get("source", "N/A"),
+                        }
+                        for item in embedded_url_analyses
+                    ],
+                    "ml_phishing_prob": None,
+                },
+                "stage3_gemini_sms": {
+                    "name": "Stage 3: Gemini AI Smishing Threat Research",
+                    "provider": ai_analysis.get("provider", "GEMINI_AI"),
+                    "provider_status": ai_analysis.get("provider_status", "NOT_REPORTED"),
+                    "fallback_reason": ai_analysis.get("fallback_reason"),
+                    "classification": ai_analysis.get("classification", "UNKNOWN"),
+                    "summary": ai_analysis.get("summary", ""),
+                "recommendation": ai_analysis.get("recommendation", ""),
+                "citations": ai_analysis.get("citations", []),
+                "domain_verification": ai_analysis.get("domain_verification", {"status": "NOT_REPORTED", "source": "CURATED_ALLOWLIST"}),
+                "claimed_entity": ai_analysis.get("claimed_entity"),
+                "claim_status": ai_analysis.get("claim_status", "UNKNOWN"),
+                "official_portal_url": ai_analysis.get("official_portal_url", "غير متاح"),
+                "portal_source": ai_analysis.get("portal_source"),
+                "search_attempted": bool(ai_analysis.get("search_attempted", False)),
+                "search_status": ai_analysis.get("search_status", "NOT_REPORTED"),
+                "source_quality": ai_analysis.get("source_quality", "UNKNOWN"),
+            },
+            },
+            "explanation": explanation,
+            "evidence_card": sms_evidence_card,
+            "virustotal": vt_result,
+            "virustotal_results": [item["virustotal"] for item in embedded_url_analyses],
+            "citations": ai_analysis.get("citations", []),
+            "domain_verification": ai_analysis.get("domain_verification", {"status": "NOT_REPORTED", "source": "CURATED_ALLOWLIST"}),
+            "ml_model": {
+                "classification": ml_result.get("classification", "UNKNOWN"),
+                "confidence": None,
+                "phishing_prob": None,
+                "source": ml_result.get("source", "N/A"),
+            },
+            "ml_models": [
+                {
+                    "classification": item["ml"].get("classification", "UNKNOWN"),
+                    "source": item["ml"].get("source", "N/A"),
+                }
+                for item in embedded_url_analyses
+            ],
+        }
+
+    @classmethod
+    async def process_guest_scan(cls, input_type: str, raw_input: str, language: str = "ar") -> dict:
+        """Process guest scan routing cleanly between URL and SMS Text pipelines."""
+        operation_id = resource_id(raw_input)
+        log_event(logger, logging.INFO, "guest_scan_started", operation_id=operation_id, input_type=input_type, language=language)
+        if input_type == "TEXT":
+            scan_res = await cls.process_text_scan(raw_input, language=language)
+        else:
+            scan_res = await cls.process_url_scan(raw_input, language=language)
+            scan_res["input_value"] = raw_input
+        scan_res["is_guest"] = True
+        scan_res["scan_id"] = None
+        await _record_scan_metric_best_effort(scan_res.get("classification", "UNKNOWN"))
+        log_event(logger, logging.INFO, "guest_scan_finished", operation_id=operation_id, classification=scan_res.get("classification"))
+        return scan_res
+
+    @staticmethod
+    def _mask_input(input_type: str, raw_input: str) -> str:
+        if input_type == "TEXT":
+            return "[TEXT REDACTED]"
+        candidate = raw_input if "://" in raw_input else "https://" + raw_input
+        try:
+            parsed = urlsplit(candidate)
+            host = parsed.hostname or "[HOST REDACTED]"
+            return f"{parsed.scheme}://{host}/[REDACTED]"
+        except Exception:
+            return "[URL REDACTED]"
+
+    @classmethod
+    async def process_authenticated_scan(
+        cls,
+        input_type: str,
+        raw_input: str,
+        user_id: str,
+        language: str = "ar",
+        idempotency_key: str | None = None,
+    ) -> dict:
+        if not user_id:
+            raise ScanPersistenceError("verified user ID required")
+
+        input_hash = _scan_digest(user_id, input_type, raw_input)
+        idempotency_key_hash = _scan_digest(user_id, "IDEMPOTENCY", idempotency_key) if idempotency_key else None
+        if idempotency_key_hash:
+            replay = await cls._find_idempotent_scan(user_id, idempotency_key_hash, input_hash)
+            if replay is not None:
+                log_event(logger, logging.INFO, "authenticated_scan_idempotent_replay", scan_id=replay.get("scan_id"))
+                return replay
+
+        operation_id = resource_id(raw_input)
+        log_event(logger, logging.INFO, "authenticated_scan_started", operation_id=operation_id, input_type=input_type, language=language)
+        if input_type == "TEXT":
+            scan_res = await cls.process_text_scan(raw_input, language=language)
+        else:
+            scan_res = await cls.process_url_scan(raw_input, language=language)
+            scan_res["input_value"] = raw_input
+
+        scan_res["is_guest"] = False
+
+        try:
+            persistence_started = time.perf_counter()
+            log_event(logger, logging.INFO, "scan_persistence_started", operation_id=operation_id, provider="SUPABASE", operation_name="insert_scan")
+            now_iso = datetime.now(timezone.utc).isoformat()
+            scan_id = str(uuid4())
+            scan_res["scan_id"] = scan_id
+            if scan_res.get("evidence_card"):
+                scan_res["evidence_card"]["scan_id"] = scan_id
+            scan_data = {
+                "id": scan_id,
+                "user_id": user_id,
+                "input_type": input_type,
+                "input_value_masked": cls._mask_input(input_type, raw_input),
+                "status": "COMPLETED",
+                "classification": scan_res["classification"],
+                "confidence_score": None,
+                "confidence_level": None,
+                "recommendation": scan_res.get("explanation", {}).get("recommendation", ""),
+                "completed_at": now_iso,
+            }
+            if idempotency_key_hash:
+                response_snapshot = {
+                    key: copy.deepcopy(value)
+                    for key, value in scan_res.items()
+                    if key not in {"input_value", "raw_input", "text_content", "message"}
+                }
+                snapshot = dict(scan_res.get("stages", {}) or {})
+                if scan_res.get("evidence_card"):
+                    snapshot["evidence_card"] = copy.deepcopy(scan_res["evidence_card"])
+                snapshot["explanation"] = copy.deepcopy(scan_res.get("explanation", {}))
+                snapshot["idempotency"] = {
+                    "input_hash": input_hash,
+                    "response": response_snapshot,
+                }
+                scan_data["idempotency_key_hash"] = idempotency_key_hash
+                scan_data["input_hash"] = input_hash
+                scan_data["analysis_snapshot"] = snapshot
+            try:
+                supabase.table("scans").insert(scan_data).execute()
+            except Exception:
+                if idempotency_key_hash:
+                    replay = await cls._find_idempotent_scan(user_id, idempotency_key_hash, input_hash)
+                    if replay is not None:
+                        log_event(logger, logging.INFO, "authenticated_scan_idempotent_race_replay", scan_id=replay.get("scan_id"))
+                        return replay
+                raise
+            persisted_fields = "id,status,classification,analysis_snapshot" if idempotency_key_hash else "id,status,classification"
+            persisted = (
+                supabase.table("scans")
+                .select(persisted_fields)
+                .eq("id", scan_id)
+                .eq("user_id", user_id)
+                .limit(1)
+                .execute()
+            )
+            if not persisted.data or str(persisted.data[0].get("id")) != scan_id:
+                raise ScanPersistenceError("scan insert could not be confirmed by readback")
+            if idempotency_key_hash:
+                stored_snapshot = persisted.data[0].get("analysis_snapshot")
+                stored_idempotency = stored_snapshot.get("idempotency") if isinstance(stored_snapshot, dict) else None
+                if not isinstance(stored_idempotency, dict) or not isinstance(stored_idempotency.get("response"), dict):
+                    raise ScanPersistenceError("idempotent scan snapshot was not confirmed")
+            if persisted.data:
+                log_event(logger, logging.INFO, "scan_persistence_succeeded", operation_id=operation_id, provider="SUPABASE", operation_name="insert_scan", scan_id=scan_id, duration_ms=elapsed_ms(persistence_started))
+                await _record_scan_metric_best_effort(scan_res.get("classification", "UNKNOWN"))
+                if not idempotency_key_hash:
+                    try:
+                        analysis_snapshot = dict(scan_res.get("stages", {}) or {})
+                        if scan_res.get("evidence_card"):
+                            analysis_snapshot["evidence_card"] = scan_res["evidence_card"]
+                        snapshot_result = supabase.table("scans").update({"analysis_snapshot": analysis_snapshot}).eq("id", scan_id).eq("user_id", user_id).execute()
+                        if not isinstance(getattr(snapshot_result, "data", None), list) or not snapshot_result.data:
+                            log_event(logger, logging.WARNING, "supabase_persistence_unconfirmed", operation_id=operation_id, provider="SUPABASE", operation_name="update_analysis_snapshot", error_code="PERSISTENCE_UNCONFIRMED")
+                    except Exception:
+                        # Historical snapshots are optional unless the client requested idempotent replay.
+                        log_event(logger, logging.WARNING, "supabase_operation_failed", operation_id=operation_id, provider="SUPABASE", operation_name="update_analysis_snapshot", error_code="PERSISTENCE_FAILED")
+
+                explanation = scan_res.get("explanation", {})
+                raw_provider = str(explanation.get("provider", "LOCAL_RULES")).upper()
+                if "GEMINI" in raw_provider:
+                    provider = "GEMINI"
+                elif "LOCAL" in raw_provider or "RULES" in raw_provider:
+                    provider = "LOCAL_RULES"
+                elif "HUMAN" in raw_provider:
+                    provider = "HUMAN_REVIEW"
+                elif raw_provider in {"TEMPLATE", "GEMINI", "HUMAN_REVIEW", "LOCAL_RULES"}:
+                    provider = "LOCAL_RULES" if raw_provider == "TEMPLATE" else raw_provider
+                else:
+                    provider = "LOCAL_RULES"
+
+                explanation_data = {
+                    "scan_id": scan_id,
+                    "language": language,
+                    "summary": explanation.get("summary", ""),
+                    "reasons": explanation.get("reasons", []),
+                    "recommendation": explanation.get("recommendation", ""),
+                    "provider": provider,
+                }
+                try:
+                    explanation_result = supabase.table("scan_explanations").insert(explanation_data).execute()
+                    if not isinstance(getattr(explanation_result, "data", None), list) or not explanation_result.data:
+                        log_event(logger, logging.WARNING, "supabase_persistence_unconfirmed", operation_id=operation_id, provider="SUPABASE", operation_name="insert_scan_explanation", error_code="PERSISTENCE_UNCONFIRMED")
+                except Exception:
+                    log_event(logger, logging.WARNING, "supabase_operation_failed", operation_id=operation_id, provider="SUPABASE", operation_name="insert_scan_explanation", error_code="PERSISTENCE_FAILED")
+                event = {
+                    "type": "scan_completed",
+                    "scan_id": scan_id,
+                    "classification": scan_res.get("classification", "UNKNOWN"),
+                    "confidence": scan_res.get("confidence"),
+                    "created_at": now_iso,
+                    "title": "اكتمل فحص جديد",
+                }
+                try:
+                    await manager.broadcast(user_id, event)
+                    log_event(logger, logging.INFO, "websocket_broadcast_succeeded", operation_id=operation_id, scan_id=scan_id, status="succeeded")
+                except Exception as error:
+                    log_event(logger, logging.WARNING, "websocket_broadcast_failed", operation_id=operation_id, scan_id=scan_id, error_type=safe_error(error), error_code="BROADCAST_FAILED")
+                if scan_res.get("classification") == "DANGEROUS":
+                    notification = {
+                        "user_id": user_id,
+                        "scan_id": scan_id,
+                        "type": "DANGEROUS_RESULT",
+                        "title": "تنبيه أمني عاجل",
+                        "body": "تم اكتشاف نتيجة خطيرة في آخر فحص. لا تفتح الرابط ولا تدخل بياناتك.",
+                    }
+                    try:
+                        saved_notification = supabase.table("notifications").insert(notification).execute()
+                        notification_rows = getattr(saved_notification, "data", None)
+                        notification_data = notification_rows[0] if isinstance(notification_rows, list) and notification_rows and isinstance(notification_rows[0], dict) and notification_rows[0].get("id") else None
+                        if notification_data is None:
+                            log_event(logger, logging.WARNING, "notification_persistence_unconfirmed", operation_id=operation_id, scan_id=scan_id, error_code="PERSISTENCE_UNCONFIRMED")
+                        else:
+                            log_event(logger, logging.INFO, "notification_succeeded", operation_id=operation_id, scan_id=scan_id, status="succeeded")
+                    except Exception:
+                        log_event(logger, logging.WARNING, "notification_failed", operation_id=operation_id, scan_id=scan_id, error_code="NOTIFICATION_FAILED")
+                        notification_data = None
+                    if notification_data is not None:
+                        try:
+                            await manager.broadcast(user_id, {
+                                "type": "security_alert",
+                                "severity": "critical",
+                                "notification": notification_data,
+                                "created_at": now_iso,
+                            })
+                            log_event(logger, logging.INFO, "websocket_broadcast_succeeded", operation_id=operation_id, scan_id=scan_id, mode="security_alert")
+                        except Exception as error:
+                            log_event(logger, logging.WARNING, "websocket_broadcast_failed", operation_id=operation_id, scan_id=scan_id, mode="security_alert", error_type=safe_error(error), error_code="BROADCAST_FAILED")
+                log_event(logger, logging.INFO, "authenticated_scan_persisted", operation_id=operation_id, scan_id=scan_id)
+        except ScanIdempotencyConflictError:
+            raise
+        except Exception as error:
+            log_event(logger, logging.ERROR, "scan_persistence_failed", operation_id=operation_id, provider="SUPABASE", error_type=safe_error(error), error_code="PERSISTENCE_FAILED")
+            raise ScanPersistenceError("scan persistence failed") from None
+
+        log_event(logger, logging.INFO, "authenticated_scan_finished", operation_id=operation_id, classification=scan_res.get("classification"))
+        return scan_res
+
+    @staticmethod
+    async def get_recent_scans(limit: int = 50, user_id: str = None) -> list:
+        if not user_id:
+            raise ValueError("user_id is required")
+        safe_limit = max(1, min(int(limit), 50))
+        try:
+            result = (
+                supabase.table("scans")
+                .select("id,input_type,input_value_masked,status,classification,confidence_score,confidence_level,created_at,completed_at,user_hidden_at,user_deleted_at")
+                .eq("user_id", user_id)
+                .is_("user_hidden_at", "null")
+                .is_("user_deleted_at", "null")
+                .order("created_at", desc=True)
+                .limit(safe_limit)
+                .execute()
+            )
+            rows = result.data or []
+            for row in rows:
+                row["confidence_score"] = None
+                row["confidence_level"] = None
+            return rows
+        except Exception:
+            logger.error("scan_history_query_failed")
+            raise
