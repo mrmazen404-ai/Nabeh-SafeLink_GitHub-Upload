@@ -18,6 +18,18 @@ import {
 import { EvidenceCode } from '../utils/evidenceExplanations';
 import '../styles/result.css';
 
+function normalizeExternalUrl(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return null;
+  const candidate = /^https?:\/\//i.test(raw) ? raw : `https://${raw}`;
+  try {
+    const parsed = new URL(candidate);
+    return ['http:', 'https:'].includes(parsed.protocol) && parsed.hostname ? parsed.href : null;
+  } catch {
+    return null;
+  }
+}
+
 export default function SmsResultScreen({ result, onReset, activeTab, setActiveTab, isGuest = true, onNavigateAuth }) {
   const { t, dir, lang } = useLanguage();
   const [copied, setCopied] = useState(false);
@@ -125,9 +137,7 @@ export default function SmsResultScreen({ result, onReset, activeTab, setActiveT
   const officialPortal = rawPortal && !isInvalidOrGenericPortal(rawPortal) ? rawPortal : null;
   const hasCuratedPortal = exp?.portal_source === 'CURATED_ALLOWLIST';
   const hasReferencePortal = exp?.portal_source === 'CURATED_ALLOWLIST_REFERENCE';
-  const portalHref = hasCuratedPortal && officialPortal
-    ? (String(officialPortal).startsWith('http') ? officialPortal : `https://${officialPortal}`)
-    : null;
+  const portalHref = hasCuratedPortal ? normalizeExternalUrl(officialPortal) : null;
   const actionSteps = Array.isArray(exp?.action_plan_steps) && exp.action_plan_steps.length > 0 ? exp.action_plan_steps : [];
   const citations = Array.isArray(exp?.citations) ? exp.citations : (Array.isArray(result?.citations) ? result.citations : []);
   const domainVerification = exp?.domain_verification || result?.domain_verification || {};
@@ -390,7 +400,9 @@ export default function SmsResultScreen({ result, onReset, activeTab, setActiveT
                   <ul style={{ marginTop: '10px', paddingInlineStart: '22px' }}>
                     {citations.map((citation, index) => (
                       <li key={`${citation.url}-${index}`}>
-                        <a href={citation.url} target="_blank" rel="noopener noreferrer">{citation.title || citation.url}</a>
+                        {normalizeExternalUrl(citation.url)
+                          ? <a href={normalizeExternalUrl(citation.url)} target="_blank" rel="noopener noreferrer">{citation.title || citation.url}</a>
+                          : (citation.title || citation.url)}
                       </li>
                     ))}
                   </ul>

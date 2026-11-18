@@ -18,6 +18,17 @@ function displayValue(value, text, lang) {
   return String(value);
 }
 
+function normalizeExternalUrl(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return null;
+  try {
+    const parsed = new URL(raw);
+    return ['http:', 'https:'].includes(parsed.protocol) && parsed.hostname ? parsed.href : null;
+  } catch {
+    return null;
+  }
+}
+
 export default function UrlEvidenceCard({ card, lang = 'ar', t }) {
   if (!card || typeof card !== 'object' || typeof t !== 'function') return null;
   const text = (key) => t(`result.evidence${key}`);
@@ -237,7 +248,10 @@ export default function UrlEvidenceCard({ card, lang = 'ar', t }) {
         </dl>
         {citations.length > 0 ? (
           <ul>
-            {citations.map((citation, index) => <li key={`${citation.url}-${index}`}><a href={citation.url} target="_blank" rel="noopener noreferrer">{citation.title || citation.url}</a></li>)}
+            {citations.map((citation, index) => {
+              const href = normalizeExternalUrl(citation.url);
+              return <li key={`${citation.url}-${index}`}>{href ? <a href={href} target="_blank" rel="noopener noreferrer">{citation.title || citation.url}</a> : (citation.title || citation.url)}</li>;
+            })}
           </ul>
         ) : <p className="url-evidence-note">{lang === 'ar' ? 'لم يعُد مزود Gemini مصادر Grounding قابلة للعرض.' : 'No displayable grounding sources were returned by Gemini.'}</p>}
       </section>
