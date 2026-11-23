@@ -1,0 +1,587 @@
+MASTER PROMPT — Academic Research Presentation Reconstruction
+
+ROLE & EXPERTISE
+
+Act as a Senior Academic Researcher, IEEE Research Paper Analyst, Scientific Presentation Designer, and PowerPoint Template Reconstruction Specialist.
+
+Your task is to transform an existing Canva PowerPoint presentation into a complete, academically rigorous research presentation based exclusively on the provided IEEE research paper.
+
+You must work with the actual uploaded PowerPoint file, not merely provide recommendations or generate a new unrelated presentation.
+
+The final presentation must demonstrate the quality, structure, technical accuracy, and analytical depth expected in a Master's-level academic research presentation.
+
+---
+
+PART 1 — PROVIDED FILES AND THEIR ROLES
+
+Three files are provided:
+
+FILE 1 — Research Paper (PDF)
+
+Title:
+
+"DedupChain: A Secure Blockchain-Enabled Storage System With Deduplication for Zero-Trust Network" (2025).
+
+Published in:
+
+IEEE Journal on Selected Areas in Communications, Volume 43, Issue 6, 2025.
+
+This document is the PRIMARY AND AUTHORITATIVE SOURCE for all scientific and technical content.
+
+You must thoroughly examine the complete 17-page paper, including:
+
+- Abstract
+- Introduction
+- Related Work
+- Background
+- System Model
+- Security Model
+- Detailed Design
+- Optimization
+- Version Management
+- Security Analysis
+- Experimental Evaluation
+- Conclusion
+- Figures, tables, algorithms, and experimental results.
+
+Do not rely on the title or abstract alone.
+
+FILE 2 — Project Requirements (Image)
+
+This image contains the official university assignment requirements.
+
+Extract and follow all its instructions.
+
+The confirmed requirements include:
+
+- Group size: 3 students.
+- One selected scientific research paper.
+- The presentation must explain:
+  1. Research Problem.
+  2. Proposed Solution.
+  3. Methodology.
+  4. Experimental Results.
+  5. Main Conclusions.
+- Presentation duration: 15 minutes.
+- Discussion: 5 minutes.
+- All three students must participate in the presentation and discussion.
+- Project grade: 10 marks.
+
+The presentation must satisfy these requirements without omitting any essential component.
+
+FILE 3 — Existing Canva PowerPoint Template
+
+The file is:
+
+"Blue White and Gray Modern Networking Presentation.pptx"
+
+It contains 10 slides originally designed for an unrelated professional networking topic.
+
+IMPORTANT:
+
+This PowerPoint is a DESIGN TEMPLATE ONLY.
+
+Its original subject matter is completely unrelated to the selected research paper.
+
+Your task is to RECONSTRUCT its contents while preserving its visual identity.
+
+---
+
+PART 2 — PRIMARY OBJECTIVE
+
+Transform the existing PowerPoint into a professional academic presentation titled:
+
+DedupChain: A Secure Blockchain-Enabled Storage System With Deduplication for Zero-Trust Network
+
+The final presentation must be:
+
+- Scientifically accurate.
+- Strictly grounded in the selected research paper.
+- Academically structured.
+- Technically detailed.
+- Visually professional.
+- Suitable for a Master's-level research presentation.
+- Appropriate for a 15-minute oral presentation.
+
+The research paper must determine the presentation content.
+
+The university assignment must determine the required academic coverage.
+
+The Canva PowerPoint must determine the visual identity.
+
+Do not allow the original template's subject matter to influence the scientific content.
+
+---
+
+PART 3 — MANDATORY SCIENTIFIC ANALYSIS
+
+Before designing the presentation, thoroughly analyze the paper.
+
+Identify and document the following:
+
+A. Research Background
+
+Explain the relationship between:
+
+- Zero-Trust Networks.
+- Permissioned Blockchain.
+- Blockchain-based data storage.
+- Secure Data Deduplication.
+
+Explain why these technologies are relevant to the research.
+
+B. Research Problem
+
+Precisely identify the two fundamental problems addressed by the paper:
+
+1. Data privacy leakage.
+2. High storage costs resulting from blockchain's full-replication architecture.
+
+Explain why conventional secure data deduplication approaches are insufficient when deployed in distributed permissioned blockchain systems.
+
+C. Security Threats
+
+Analyze the two attacks explicitly addressed by the research:
+
+- Offline Brute-Force Attack.
+- Frequency Analysis Attack.
+
+Explain their relationship with Message-Locked Encryption (MLE) and deterministic ciphertexts.
+
+Do not exaggerate the threat model or introduce attacks that the paper does not analyze.
+
+D. Proposed Solution
+
+Explain the DedupChain system and its overall design.
+
+Analyze the role of:
+
+- Deduplication Proxy.
+- Intel SGX Enclave.
+- Oblivious RAM (ORAM).
+- Symmetric Encryption.
+- Data Chunking.
+- Secure Key Management.
+
+Explain the complete interaction between these components.
+
+E. Core Technical Contributions
+
+Carefully analyze these techniques:
+
+1. Counting LDCF (c-LDCF).
+2. Filter-Aided ORAM.
+3. Double-Trees Structure.
+4. On-Chain Merkle Tree.
+5. Off-Chain ORAM Tree.
+6. Multi-Path ORAM.
+7. Mutually Exclusive ORAM.
+8. Asynchronous Execution.
+9. Version Management.
+
+For each technique, explain:
+
+- The problem it addresses.
+- Why the technique is necessary.
+- How it operates within DedupChain.
+- Its security or performance contribution.
+
+Do not merely list technical terms.
+
+Explain the relationships between the techniques.
+
+F. Security Analysis
+
+Explain how the proposed architecture mitigates:
+
+- Offline brute-force attacks.
+- Frequency analysis attacks.
+
+Distinguish between the security properties demonstrated by the authors and any assumptions or limitations.
+
+G. Experimental Evaluation
+
+Extract the actual experimental environment and results.
+
+Pay special attention to:
+
+- Hardware specifications.
+- SGX enclave memory.
+- Software and cryptographic libraries.
+- Number of experiments and averaging methodology.
+- ORAM performance.
+- Blockchain smart contract performance.
+- Deduplication proxy storage overhead.
+- Upload delay.
+- Upload throughput.
+- Influence of duplicate and non-duplicate data ratios.
+- Effects of blockchain node count and request size.
+
+Preserve the original units, experimental conditions, and values.
+
+Important reported results include:
+
+- DedupChain upload throughput exceeding 400 TPS.
+- Approximately 320 ms for membership checking of 1600 data chunks under the specific experimental configuration described in the paper.
+
+Verify every numerical value directly against the paper before including it.
+
+Never invent experimental numbers, percentages, graphs, comparisons, or performance claims.
+
+---
+
+PART 4 — SLIDE COUNT AND ACADEMIC STRUCTURE
+
+Do not blindly retain the original 10-slide count.
+
+Determine the appropriate number of slides based on:
+
+1. The scientific complexity of the paper.
+2. The university's required content.
+3. The 15-minute presentation limit.
+4. The participation of three students.
+5. The need for readable technical diagrams.
+
+Target approximately 13–16 slides, including the title and references, but choose the final number based on the actual content.
+
+The presentation should follow a coherent academic research narrative.
+
+Suggested structure:
+
+1. Title Slide.
+2. Research Overview and Paper Information.
+3. Background and Research Motivation.
+4. Problem Statement.
+5. Research Challenges.
+6. Proposed DedupChain Framework.
+7. System Architecture.
+8. Data Upload and Deduplication Workflow.
+9. Oblivious Data Deduplication.
+10. Filter-Aided ORAM and c-LDCF.
+11. Double-Trees Architecture.
+12. Performance Optimization Techniques.
+13. Security Analysis.
+14. Experimental Setup and Results.
+15. Research Contributions and Conclusion.
+16. References and Q&A.
+
+This is a proposed framework, not a rigid slide count.
+
+You may merge, divide, or reorganize slides when scientifically justified.
+
+Every required assignment component must be covered.
+
+---
+
+PART 5 — TECHNICAL VISUALIZATION
+
+This is a technical research presentation.
+
+Visuals must explain the actual architecture and mechanisms of DedupChain.
+
+Prioritize:
+
+1. System architecture diagram.
+2. Data upload workflow.
+3. Oblivious deduplication process.
+4. Filter-Aided ORAM structure.
+5. Double-Trees structure.
+6. Performance evaluation charts.
+7. Security mechanism diagrams.
+
+Use the original paper's figures and tables as the authoritative visual references.
+
+You may redraw them in a cleaner presentation-friendly style, but you must preserve their technical meaning and relationships.
+
+For each technical diagram:
+
+- Use correct component names.
+- Preserve the direction of data flow.
+- Label on-chain and off-chain components correctly.
+- Distinguish trusted and untrusted components where appropriate.
+- Avoid introducing architectural components absent from the paper.
+
+If a figure is redrawn, include a small source attribution such as:
+
+"Source: Qi et al., IEEE JSAC, 2025."
+
+Do not generate decorative blockchain illustrations that replace actual technical explanations.
+
+Do not use generic AI-generated technology images as substitutes for research diagrams.
+
+---
+
+PART 6 — POWERPOINT TEMPLATE PRESERVATION
+
+This requirement is critical.
+
+EDIT THE EXISTING POWERPOINT FILE.
+
+Do not create a completely different design unless technically unavoidable.
+
+Preserve its existing visual identity, including:
+
+- Blue, white, and gray color palette.
+- Background treatments.
+- Typography style.
+- Font hierarchy.
+- Slide proportions.
+- Layout principles.
+- Spacing and alignment.
+- Professional visual consistency.
+- Existing reusable shapes and design elements.
+
+However, REMOVE OR REPLACE ALL UNRELATED CONTENT.
+
+Completely eliminate:
+
+- Original networking presentation text.
+- Ingoude Company references.
+- Professional relationship content.
+- Networking strategies.
+- Unrelated photographs.
+- Unrelated illustrations.
+- Unrelated icons.
+- Unrelated charts.
+- Unrelated contact details.
+- Original website addresses.
+- Any other elements that do not support the DedupChain research.
+
+Do not simply cover unrelated content with white rectangles.
+
+Actually remove obsolete objects and replace them with appropriate research content.
+
+Reuse the existing slide layouts intelligently.
+
+You may rearrange existing design elements when necessary to accommodate scientific diagrams and charts while maintaining the original visual identity.
+
+The result should look like the original template was professionally designed for this research paper from the beginning.
+
+---
+
+PART 7 — ACADEMIC WRITING AND CONTENT QUALITY
+
+Use formal academic English throughout the slides.
+
+The language must be:
+
+- Precise.
+- Technically accurate.
+- Concise.
+- Grammatically correct.
+- Appropriate for postgraduate research.
+- Consistent with IEEE terminology.
+
+Avoid:
+
+- Marketing language.
+- Unnecessary introductions.
+- Generic blockchain explanations.
+- Repetitive paragraphs.
+- Unsupported claims.
+- Excessive text.
+- Oversimplification of technical contributions.
+
+Each slide must have:
+
+1. A clear academic title.
+2. A specific scientific purpose.
+3. Concise technical content.
+4. An appropriate visual when it improves understanding.
+5. A source citation when the information or figure requires attribution.
+
+Do not put complete paragraphs from the research paper onto slides.
+
+Synthesize the research accurately while preserving its meaning.
+
+---
+
+PART 8 — REFERENCES AND SOURCE TRACEABILITY
+
+Use the selected IEEE paper as the main reference.
+
+Include the complete paper citation on the references slide.
+
+For important claims, figures, and experimental results, provide appropriate short citations.
+
+Do not add external studies or references unless explicitly necessary and clearly distinguished from the original paper.
+
+Do not fabricate bibliographic information.
+
+Do not present your own interpretation as an author-reported finding.
+
+---
+
+PART 9 — THREE-STUDENT PRESENTATION DISTRIBUTION
+
+Organize the presentation into three coherent speaking sections.
+
+Allocate approximately five minutes to each student.
+
+Suggested distribution:
+
+Student 1:
+
+- Research background.
+- Motivation.
+- Problem statement.
+- Research challenges.
+
+Student 2:
+
+- Proposed solution.
+- System architecture.
+- Deduplication workflow.
+- Core technical mechanisms.
+
+Student 3:
+
+- Optimization techniques.
+- Security analysis.
+- Experimental evaluation.
+- Results and conclusion.
+
+Adjust the distribution according to the final slide count.
+
+All three students must have meaningful technical contributions.
+
+Do not assign one student only introductory or superficial material.
+
+The total presentation must remain within 15 minutes.
+
+The additional 5 minutes are reserved for discussion and questions.
+
+---
+
+PART 10 — SPEAKER NOTES
+
+Add professional speaker notes to the slides.
+
+The notes should contain:
+
+- A clear explanation of the slide.
+- Technical details that cannot fit on the slide.
+- Smooth transitions to the next slide.
+- Important terminology.
+- A realistic speaking duration.
+
+Write notes in clear academic English.
+
+The slides must remain concise, while the notes provide the necessary depth.
+
+Also provide a separate presentation script divided among the three students, aligned with the actual slide numbers.
+
+---
+
+PART 11 — QUALITY CONTROL AND VERIFICATION
+
+Before delivering the final PowerPoint, conduct a complete quality-control review.
+
+Scientific verification
+
+Check every slide against the original PDF.
+
+Verify:
+
+- Technical terminology.
+- Architectural relationships.
+- Security claims.
+- Experimental results.
+- Numerical values.
+- Figure interpretations.
+- Research contributions.
+
+Remove unsupported claims.
+
+Assignment verification
+
+Confirm that the presentation covers all five mandatory academic elements:
+
+- Research Problem.
+- Proposed Solution.
+- Methodology.
+- Results.
+- Conclusions.
+
+Confirm the three-student participation plan and 15-minute duration.
+
+Design verification
+
+Check every slide for:
+
+- Text overflow.
+- Cropped images.
+- Misalignment.
+- Font inconsistency.
+- Poor contrast.
+- Excessive text.
+- Unreadable charts.
+- Broken diagrams.
+- Remaining unrelated Canva content.
+
+Render the complete presentation and inspect every slide visually.
+
+Do not consider the task complete merely because the PowerPoint file opens successfully.
+
+---
+
+PART 12 — REQUIRED FINAL DELIVERABLES
+
+Deliver the following:
+
+1. Final PowerPoint (.pptx) — the reconstructed presentation using the original Canva template.
+2. PDF Version (.pdf) — exported from the final presentation.
+3. Presentation Script (.docx) — complete speaking notes divided among the three students, with timing and slide references.
+4. Research Accuracy Report (.docx) — a concise verification report identifying how each major slide is supported by the original paper.
+
+If you cannot produce one of these formats, clearly explain the limitation instead of claiming it was completed.
+
+---
+
+FINAL EXECUTION INSTRUCTION
+
+Follow this sequence:
+
+PHASE 1: Inspect all three files completely.
+
+PHASE 2: Analyze the scientific paper and extract its research structure, technical contributions, figures, tables, and results.
+
+PHASE 3: Extract the official assignment requirements.
+
+PHASE 4: Inspect the original PowerPoint design and identify reusable layouts, colors, fonts, shapes, and visual components.
+
+PHASE 5: Determine the optimal slide count and academic narrative.
+
+PHASE 6: Reconstruct the actual PowerPoint using the original template.
+
+PHASE 7: Add accurate diagrams, charts, citations, and speaker notes.
+
+PHASE 8: Generate the required supporting documents.
+
+PHASE 9: Render and inspect every slide, then correct all detected issues.
+
+PHASE 10: Deliver the final files.
+
+IMPORTANT RESTRICTIONS:
+
+- Never invent scientific information.
+- Never replace the paper's actual methodology with a generic blockchain methodology.
+- Never fabricate experimental results.
+- Never retain unrelated Canva content.
+- Never sacrifice technical accuracy for visual appearance.
+- Never create a presentation that exceeds the assigned presentation duration.
+- Never claim that a file was edited, rendered, or verified unless the operation was actually completed.
+
+The final result must be a scientifically faithful, technically rigorous, visually coherent, Master's-level presentation of the actual DedupChain research paper.
+
+Begin by inspecting the uploaded files, then execute the entire workflow.
+
+name students in cover Page 
+Amal Ali Alghamdi 
+447003182
+
+Nouf Mabrouk Alghamdi 
+447009906
+
+Samia Jumaan Alghamdi 
+447000753
