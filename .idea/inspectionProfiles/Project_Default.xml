@@ -1,0 +1,37 @@
+<component name="InspectionProjectProfileManager">
+  <profile version="1.0">
+    <option name="myName" value="Project Default" />
+    <inspection_tool class="PyPackageRequirementsInspection" enabled="false" level="WARNING" enabled_by_default="false">
+      <option name="ignoredPackages">
+        <list>
+          <option value="scapy" />
+          <option value="pyshark" />
+          <option value="python-nmap" />
+          <option value="pandas" />
+          <option value="pyqtgraph" />
+          <option value="reportlab" />
+          <option value="sqlite" />
+          <option value="Flask-SQLAlchemy" />
+          <option value="Flask-WTF" />
+          <option value="Flask-Login" />
+          <option value="WTForms" />
+          <option value="PySide6" />
+          <option value="PySide6-Addons" />
+          <option value="qtawesome" />
+          <option value="dpkt" />
+          <option value="pyserial" />
+          <option value="sqlalchemy" />
+          <option value="alembic" />
+          <option value="numpy" />
+          <option value="psutil" />
+          <option value="loguru" />
+          <option value="click" />
+          <option value="python-dotenv" />
+          <option value="schedule" />
+          <option value="cryptography" />
+          <option value="pyinstaller" />
+        </list>
+      </option>
+    </inspection_tool>
+  </profile>
+</component>

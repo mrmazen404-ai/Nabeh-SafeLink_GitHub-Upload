@@ -1,0 +1,19 @@
+{
+  "routes": [
+    { "path": "/", "title": "Splash" },
+    { "path": "/welcome", "title": "Welcome" },
+    { "path": "/scan", "title": "Scanner" },
+    { "path": "/login", "title": "Login" },
+    { "path": "/register", "title": "Register" },
+    { "path": "/forgot-password", "title": "Forgot password" },
+    { "path": "/verify-otp", "title": "Verify OTP" },
+    { "path": "/reset-password", "title": "Reset password" },
+    { "path": "/home", "title": "Dashboard" },
+    { "path": "/history", "title": "Scan history" },
+    { "path": "/stats", "title": "Statistics" },
+    { "path": "/about", "title": "About" },
+    { "path": "/contact", "title": "Contact" },
+    { "path": "/faq", "title": "FAQ" },
+    { "path": "/guide", "title": "User guide" }
+  ]
+}
