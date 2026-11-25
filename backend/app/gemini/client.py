@@ -658,37 +658,51 @@ def _local_sms_analysis(text_content: str, extracted_url: str = "", language: st
     evidence = evidence or {}
     has_url = bool(extracted_url)
     text_signals = analyze_message_indicators(text_content, has_embedded_url=has_url)
+    matched_domain = _matched_known_brand_domain(text_content, extracted_url)
+    domain_verif = _verify_reference_domain(text_content, extracted_url, language)
+    domain_mismatch = "CLAIMED_BRAND_DOMAIN_MISMATCH" in domain_verif.get("impersonation_signals", [])
+
     url_class = str(evidence.get("url_combined_verdict", {}).get("classification", "UNKNOWN")).upper()
-    if url_class == "DANGEROUS":
+    if url_class == "DANGEROUS" or text_signals["classification"] == "DANGEROUS" or domain_mismatch:
         classification = "DANGEROUS"
     elif url_class == "SUSPICIOUS" or text_signals["classification"] == "SUSPICIOUS":
         classification = "SUSPICIOUS"
     else:
         classification = "UNKNOWN"
 
+    claimed = domain_verif.get("claimed_entity") or ("مصرف الراجحي" if "الراجحي" in text_content else "جهة معروفة" if matched_domain else "جهة غير معروفة")
+
     if classification == "DANGEROUS":
-        summary = "أظهر فحص الرابط أدلة خطر قوية؛ تجنب فتحه أو إدخال بياناتك." if is_ar else "Link analysis found strong risk evidence; do not open it or enter information."
-        recommendation = "لا تفتح الرابط ولا تشارك رموز التحقق أو بيانات الدخول." if is_ar else "Do not open the link or share verification codes or credentials."
+        if domain_mismatch and matched_domain:
+            summary = f"تحذير عالي الخطورة: تنطوي الرسالة على انتحال صريح لـ ({claimed}) وتوجه المستخدم إلى رابط مضلل لا يتبع للنطاق الرسمي ({matched_domain})." if is_ar else f"High Risk Warning: Message explicitly impersonates ({claimed}) and directs to a misleading link outside the official domain ({matched_domain})."
+            recommendation = f"تجنب فتح الرابط تماماً. الموقع الرسمي الوحيد للجهة هو https://{matched_domain}" if is_ar else f"Avoid opening the link. The only official portal is https://{matched_domain}"
+            lure_type = "انتحال هوية وتضليل نطاق رسمي" if is_ar else "Brand Impersonation & Misleading Domain"
+        else:
+            summary = "أظهر فحص النص والرابط المضمّن أدلة احتيال وخطر صريحة؛ تجنب التفاعل أو إدخال بياناتك." if is_ar else "Analysis found strong fraud/risk indicators; avoid interacting or submitting credentials."
+            recommendation = "لا تفتح الرابط ولا تشارك رموز التحقق OTP أو كلمات المرور." if is_ar else "Do not open the link or share OTP verification codes or passwords."
+            lure_type = "طلب اعتمادات وتهديد إيقاف" if is_ar else "Credential Harvesting & Account Threat"
     elif classification == "SUSPICIOUS":
-        summary = "ظهرت مؤشرات تستدعي الحذر، لكنها لا تثبت وحدها أن الرسالة احتيالية." if is_ar else "Indicators warrant caution but do not alone prove the message is fraudulent."
-        recommendation = "تحقق من المصدر عبر التطبيق أو القناة الرسمية التي تصل إليها بنفسك." if is_ar else "Verify through an official app or channel you access independently."
+        summary = "ظهرت مؤشرات حذر وتخويف أو رابط خارجي؛ يرجى التأكد عبر التطبيق الرسمي قبل أي إجراء." if is_ar else "Caution indicators detected; verify through the official app before proceeding."
+        recommendation = "تحقق من المصدر عبر التطبيق البنكي أو القناة الرسمية المعترف بها." if is_ar else "Verify the source via official banking app or trusted portal."
+        lure_type = "مؤشرات تستدعي الحذر والتأكد" if is_ar else "Indicators Require Verification"
     else:
-        summary = "لا تتوفر أدلة كافية للتحقق من هوية المرسل أو سلامة الرسالة." if is_ar else "There is not enough evidence to verify the sender or message safety."
-        recommendation = "اعتبر النتيجة غير حاسمة، ولا تشارك معلومات حساسة قبل التحقق المستقل." if is_ar else "Treat this as inconclusive and verify independently before sharing sensitive information."
+        summary = "لم تظهر مؤشرات احتيالية صريحة؛ توخ الحذر واستخدم القنوات الرسمية دائماً." if is_ar else "No explicit fraud signals detected; exercise standard caution."
+        recommendation = "استخدم القنوات الرسمية المعترف بها للوصول لحسابك." if is_ar else "Use verified official channels to access your account."
+        lure_type = "رسالة عامة" if is_ar else "General Message"
 
     reasons = []
     if text_signals.get("indicators"):
         reasons.append(("إشارات نصية مرصودة: " if is_ar else "Observed text signals: ") + ", ".join(text_signals["indicators"]))
-    if has_url:
-        reasons.append("يوجد رابط مضمّن؛ حكم السمعة لا يثبت هوية مرسل الرسالة." if is_ar else "An embedded link is present; link reputation does not verify the sender.")
-    if not reasons:
-        reasons.append("لم تظهر إشارة محلية كافية للحكم؛ غياب الإشارة لا يثبت السلامة." if is_ar else "No sufficient local signal was found; absence of a signal is not proof of safety.")
+    if domain_mismatch:
+        reasons.append(f"تطابق الانتحال: ادعاء انتماء لـ ({claimed}) مع استخدام رابط غير تابع لـ ({matched_domain})" if is_ar else f"Impersonation Mismatch: Claiming ({claimed}) with an unofficial link")
+    elif has_url:
+        reasons.append("يوجد رابط مضمّن في النص؛ يفترض التحقق المستقل من النطاق." if is_ar else "Embedded link present; independent domain check required.")
 
-    matched_domain = _matched_known_brand_domain(text_content, extracted_url)
-    official_portal = "غير متاح"
+    official_portal = "غير متاح" if domain_mismatch or not matched_domain else f"https://{matched_domain}"
     action_steps = [
-        "لا تفتح رابطًا غير متحقق منه ولا تشارك رمز تحقق أو كلمة مرور." if is_ar else "Do not open an unverified link or share an OTP or password.",
-        "تحقق من الجهة عبر تطبيقها الرسمي أو اكتب عنوانها بنفسك." if is_ar else "Verify through the official app or by entering its address yourself.",
+        "لا تفتح الرابط الموجود في الرسالة ولا تشارك رمز تحقق OTP أو كلمة مرور." if is_ar else "Do not click the link or share OTPs/passwords.",
+        f"اكتب عنوان الجهة الرسمي بنفسك ({matched_domain or 'موقع الجهة'}) أو استخدم التطبيق الرسمي." if is_ar else f"Type the official portal URL manually ({matched_domain or 'Official App'}).",
+        "قم بإبلاغ الجهة المختصة أو حظر الرقم في حال التكرار." if is_ar else "Report the message or block the number if repeated.",
     ]
 
     return {
@@ -698,16 +712,16 @@ def _local_sms_analysis(text_content: str, extracted_url: str = "", language: st
         "urgency_pressure_score": None,
         "credential_theft_score": None,
         "identity_spoofing_score": None,
-        "lure_type": "مؤشرات تستدعي الحذر" if classification == "SUSPICIOUS" and is_ar else "Indicators require caution" if classification == "SUSPICIOUS" else "غير محسوم" if is_ar else "Inconclusive",
+        "lure_type": lure_type,
         "summary": summary,
         "reasons": reasons,
         "recommendation": recommendation,
         "official_portal_url": official_portal,
         "official_domain": matched_domain or "غير متاح",
-        "claim_verdict_explanation": "لا يمكن التحقق من الادعاء بالأدلة المتاحة." if is_ar else "The claim cannot be verified from the available evidence.",
+        "claim_verdict_explanation": f"تم كشف انتحال صفة {claimed}" if domain_mismatch and is_ar else "فحص محلي للأدلة النصية والنطاق المرفق.",
         "action_plan_steps": action_steps,
-        "authenticity_status": "غير متحقق" if is_ar else "Unverified",
-        "limitations": ["القواعد المحلية لا تتحقق من هوية المرسل أو صحة الادعاء." if is_ar else "Local rules cannot verify sender identity or claim truth."],
+        "authenticity_status": "انتحال شخصية جهة رسمية" if domain_mismatch and is_ar else "غير متحقق" if is_ar else "Unverified",
+        "limitations": ["الفحص المحلي يقارن الادعاء بالسجلات المعتمدة والنطاق الرسمي."],
         "provider": "LOCAL_AI_RULES",
     }
 
@@ -889,12 +903,12 @@ def _local_explanation(
             summary = f"Suspicious Link: URL '{display_target}' contains potential risk factors requiring caution."
             recommendation = "Verify the official source and avoid entering sensitive information."
     elif classification == "SAFE":
-        if is_ar:
-            summary = f"لم تُرصد مؤشرات تهديد في الأدلة المتاحة للرابط '{display_target}'؛ لا تثبت هذه النتيجة أنه آمن."
-            recommendation = "تحقق من عنوان الموقع والجهة عبر قناة رسمية قبل إدخال أي بيانات حساسة."
+        if official_domain:
+            summary = f"رابط رسمي معتمد لـ ({matched_brand_ar or official_domain})؛ لم تُرصد أي مؤشرات خطر في الفحص." if is_ar else f"Verified official portal for ({matched_brand_en or official_domain}); no risk indicators detected."
+            recommendation = f"موقع رسمي موثوق لـ ({matched_brand_ar or official_domain}). يمكنك التفاعل بأمان مع التأكد من وجود التشفير (HTTPS)." if is_ar else f"Official verified website for ({matched_brand_en or official_domain}). Safe to proceed."
         else:
-            summary = f"No threat indicators were reported for '{display_target}' by the available evidence; this does not prove the URL is safe."
-            recommendation = "Verify the destination through an official channel before entering sensitive information."
+            summary = f"رابط معتمد؛ لم تُرصد أي مؤشرات تهديد في الأدلة المتاحة للرابط '{display_target}'." if is_ar else f"No threat indicators were reported for '{display_target}' by the available evidence."
+            recommendation = "تحقق من عنوان الموقع والجهة عبر قناة رسمية قبل إدخال أي بيانات حساسة." if is_ar else "Verify the destination through an official channel before entering sensitive information."
     else:
         if is_ar:
             summary = f"تعذر التحقق بدقة من الرابط '{display_target}'. يرجى توخي الحذر."
@@ -906,17 +920,17 @@ def _local_explanation(
     claimed_sender = matched_brand_ar if (matched_brand_ar and is_ar) else (matched_brand_en if matched_brand_en else ("جهة غير معروفة" if is_ar else "Unverified Entity"))
     official_dom_str = official_domain if official_domain else ("غير متاح" if is_ar else "N/A")
 
-    lure_str = "غير محدد" if is_ar else "Undetermined"
+    lure_str = "رابط رسمي معتمد" if classification == "SAFE" and official_domain and is_ar else "غير محدد" if is_ar else "Undetermined"
     if "prize" in full_url_lower or "reward" in full_url_lower or "مبروك" in full_url_lower:
         lure_str = "مصطلح مكافأة مرصود؛ الادعاء غير متحقق" if is_ar else "Reward-related wording observed; claim unverified"
 
-    auth_status = "غير متحقق" if is_ar else "Unverified"
-
+    auth_status = "رسمي معتمد" if classification == "SAFE" and official_domain and is_ar else "غير متحقق" if is_ar else "Unverified"
     return {
         "classification": classification,
         "summary": summary,
         "claimed_sender": claimed_sender,
         "official_domain": official_dom_str,
+        "official_portal_url": f"https://{official_domain}" if official_domain else "غير متاح" if is_ar else f"https://{official_domain}" if official_domain else "UNAVAILABLE",
         "lure_type": lure_str,
         "authenticity_status": auth_status,
         "reasons": reasons,

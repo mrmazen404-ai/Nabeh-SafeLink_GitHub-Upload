@@ -397,22 +397,12 @@ class ScanService:
             ai["confidence"] = max(0.0, min(1.0, max(ai_confidence, evidence_confidence)))
         return ai
 
-    @staticmethod
-    def combine_scan_results(vt_result: dict, ml_result: dict) -> dict:
-        """Combine 3-Stage Scan Results (Stage 1: ML, Stage 2: VirusTotal) into an accurate verdict.
-
-        Core security principle: an ML probability alone is never sufficient for
-        DANGEROUS classification.  A calibrated high ML signal may independently
-        produce DANGEROUS only when the predictor also reports at least two
-        explicit structural URL signals, and VirusTotal has not returned a
-        consistent SAFE verdict that directly conflicts with that decision.
-        DANGEROUS requires either:
-          (a) VirusTotal with 3+ malicious engines, OR
-          (b) VirusTotal with 1-2 malicious AND ML corroboration (high confidence), OR
-          (c) ML at a very high threshold AND two strong structural URL signals.
-        """
+    @classmethod
+    def combine_scan_results(cls, vt_result: dict, ml_result: dict, target_url: str = "") -> dict:
+        """Combine 3-Stage Scan Results (Stage 1: ML, Stage 2: VirusTotal) into an accurate verdict."""
         vt_result = vt_result or {}
         ml_result = ml_result or {}
+        target_url = target_url or str(vt_result.get("url") or ml_result.get("url") or "")
         vt_status = str(vt_result.get("status", "UNKNOWN")).upper()
 
         try:
@@ -436,8 +426,6 @@ class ScanService:
             and vt_status_consistent
             and vt_status in {"SAFE", "SUSPICIOUS", "DANGEROUS"}
         )
-
-
         ml_class = str(ml_result.get("classification", "UNKNOWN")).upper()
         ml_prob = ml_result.get("phishing_prob")
         try:
@@ -551,19 +539,30 @@ class ScanService:
             }
 
         # ═══════════════════════════════════════════════════════════════════
-        # TIER 3: SAFE — requires positive evidence from both sources
+        # TIER 3: SAFE — positive evidence or official allowlist match
         # ═══════════════════════════════════════════════════════════════════
 
-        # Rule 3a: Both VT and ML agree on SAFE
-        if has_vt and has_ml and vt_status == "SAFE" and ml_class == "SAFE":
-            # Confidence = average of both
+        # Rule 3a: Curated Official Allowlist Domain match with zero malicious flags
+        from app.gemini.client import _matched_known_brand_domain
+        matched_brand = _matched_known_brand_domain("", target_url)
+        if matched_brand and vt_malicious == 0 and vt_suspicious == 0 and ml_class != "DANGEROUS":
+            return {
+                "classification": "SAFE",
+                "confidence": 0.98,
+                "weighted_score": round(float(ml_prob or 0.0), 4),
+                "decision_code": "OFFICIAL_ALLOWLIST_MATCH",
+                "source": f"OFFICIAL_BRAND_DOMAIN ({matched_brand})",
+            }
+
+        # Rule 3b: Both VT and ML agree on SAFE
+        if (has_vt or vt_result.get("harmless", 0) >= 10) and vt_malicious == 0 and vt_suspicious == 0 and (has_ml or ml_class == "SAFE"):
             vt_conf = float(vt_result.get("confidence") or 0.85)
-            ml_conf = 1.0 - ml_prob  # phishing_prob = 0 → confidence = 1
+            ml_conf = 1.0 - float(ml_prob or 0.0)
             confidence = min(0.95, (vt_conf + ml_conf) / 2)
             return {
                 "classification": "SAFE",
                 "confidence": round(confidence, 4),
-                "weighted_score": round(ml_prob, 4),
+                "weighted_score": round(float(ml_prob or 0.0), 4),
                 "decision_code": "SAFE_SOURCE_CONSENSUS",
                 "source": "HYBRID_CONSENSUS_SAFE",
             }
@@ -606,51 +605,42 @@ class ScanService:
         }
 
     @staticmethod
-    def _local_explanation(classification: str, language: str) -> dict:
+    def _local_explanation(classification: str, language: str, target_url: str = "") -> dict:
         english = language == "en"
-        text = {
-            "SAFE": ("لم تُرصد مؤشرات خطر في الأدلة المتاحة؛ هذا لا يثبت أن الرابط آمن." if not english else "No risk indicators were reported by the available evidence; this does not prove the URL is safe."),
-            "SUSPICIOUS": ("ظهرت مؤشرات تستدعي الحذر والتحقق من المصدر." if not english else "Indicators require caution and source verification."),
-            "DANGEROUS": ("ظهرت مؤشرات خطر قوية؛ لا تفتح الرابط ولا تشارك بياناتك." if not english else "Strong risk indicators were found; do not open or share data."),
-            "UNKNOWN": ("تعذر التحقق محلياً؛ لا تعتبر النتيجة آمنة." if not english else "Local verification was inconclusive; do not treat this as safe."),
-        }.get(classification, "تعذر التحقق محلياً.")
-        recommendation = {
-            "SAFE": "تابع بحذر." if not english else "Continue cautiously.",
-            "SUSPICIOUS": "تحقق من المصدر قبل التفاعل." if not english else "Verify the source before interacting.",
-            "DANGEROUS": "تجنب فتح الرابط أو إدخال بياناتك." if not english else "Avoid opening the link or entering data.",
-            "UNKNOWN": "أعد المحاولة لاحقاً أو تحقق عبر مصدر موثوق." if not english else "Try again later or verify with a trusted source.",
-        }.get(classification, "توخ الحذر." if not english else "Exercise caution.")
-        return {"summary": text, "reasons": [], "recommendation": recommendation, "provider": "LOCAL_RULES"}
+        from app.gemini.client import _matched_known_brand_domain
+        matched_brand = _matched_known_brand_domain("", target_url) if target_url else None
+        if classification == "SAFE" and matched_brand:
+            text = f"رابط رسمي معتمد لـ ({matched_brand})؛ لم تُرصد أي مؤشرات خطر في أدلة الفحص." if not english else f"Verified official portal for ({matched_brand}); no risk indicators detected."
+            recommendation = f"موقع رسمي موثوق لـ ({matched_brand}). يمكنك التفاعل بأمان." if not english else f"Official verified website for ({matched_brand}). Safe to proceed."
+        else:
+            text = {
+                "SAFE": ("رابط معتمد؛ لم تُرصد مؤشرات خطر في الأدلة المتاحة." if not english else "No risk indicators were reported by the available evidence."),
+                "SUSPICIOUS": ("ظهرت مؤشرات تستدعي الحذر والتحقق من المصدر." if not english else "Indicators require caution and source verification."),
+                "DANGEROUS": ("ظهرت مؤشرات خطر قوية؛ لا تفتح الرابط ولا تشارك بياناتك." if not english else "Strong risk indicators were found; do not open or share data."),
+                "UNKNOWN": ("تعذر التحقق محلياً؛ لا تعتبر النتيجة آمنة." if not english else "Local verification was inconclusive; do not treat this as safe."),
+            }.get(classification, "تعذر التحقق محلياً.")
+            recommendation = {
+                "SAFE": "تابع بحذر وتأكد دائماً من وجود بروتوكول التشغيل الآمن (HTTPS)." if not english else "Continue cautiously and ensure HTTPS is active.",
+                "SUSPICIOUS": "تحقق من المصدر قبل التفاعل." if not english else "Verify the source before interacting.",
+                "DANGEROUS": "تجنب فتح الرابط أو إدخال بياناتك." if not english else "Avoid opening the link or entering data.",
+                "UNKNOWN": "أعد المحاولة لاحقاً أو تحقق عبر مصدر موثوق." if not english else "Try again later or verify with a trusted source.",
+            }.get(classification, "توخ الحذر." if not english else "Exercise caution.")
+        return {
+            "summary": text,
+            "reasons": [f"نطاق رسمي معتمد لـ ({matched_brand})"] if matched_brand else [],
+            "recommendation": recommendation,
+            "provider": "LOCAL_RULES",
+            "official_domain": matched_brand or "غير متاح",
+            "official_portal_url": f"https://{matched_brand}" if matched_brand else "غير متاح",
+        }
 
     @classmethod
     def _local_sms_fallback(cls, text_content: str, extracted_url: str, combined: dict, language: str, provider: str) -> dict:
-        text_result = cls.analyze_text_phishing(text_content, bool(extracted_url))
-        rank = {"SAFE": 0, "UNKNOWN": 1, "SUSPICIOUS": 2, "DANGEROUS": 3}
-        candidates = [text_result.get("classification", "UNKNOWN")]
-        if extracted_url:
-            candidates.append(combined.get("classification", "UNKNOWN"))
-        classification = max(
-            (str(item).upper() for item in candidates if str(item).upper() in rank),
-            key=lambda item: rank[item],
-            default="UNKNOWN",
-        )
-        explanation = cls._local_explanation(classification, language)
-        explanation.update({
-            "classification": classification,
-            "confidence": None,
-            "fraud_probability": None,
-            "urgency_pressure_score": None,
-            "credential_theft_score": None,
-            "identity_spoofing_score": None,
-            "lure_type": "إشارات تستدعي الحذر" if classification == "SUSPICIOUS" and language == "ar" else "Indicators require caution" if classification == "SUSPICIOUS" else "غير محسوم" if language == "ar" else "Inconclusive",
-            "authenticity_status": "غير متحقق" if language == "ar" else "Unverified",
-            "limitations": ["القواعد المحلية لا تثبت سلامة الرسالة أو هوية مرسلها." if language == "ar" else "Local rules cannot verify message safety or sender identity."],
-            "provider": provider,
-        })
-        if text_result.get("indicators"):
-            explanation["reasons"] = [
-                ("إشارات مرصودة: " if language == "ar" else "Observed signals: ") + ", ".join(text_result["indicators"])
-            ]
+        from app.gemini.client import _local_sms_analysis
+        explanation = _local_sms_analysis(text_content, extracted_url, language, {"url_combined_verdict": combined})
+        explanation["provider"] = provider
+        explanation["provider_status"] = "FALLBACK"
+        explanation["fallback_reason"] = provider
         return explanation
 
     @classmethod
@@ -696,7 +686,7 @@ class ScanService:
         ml_result, vt_result = await asyncio.gather(run_ml(), run_vt())
 
 
-        combined = cls.combine_scan_results(vt_result, ml_result)
+        combined = cls.combine_scan_results(vt_result, ml_result, target_url=target_url)
         log_event(logger, logging.INFO, "scan_fusion_completed", operation_id=operation_id, provider="LOCAL_RULES", classification=combined.get("classification"), source=combined.get("source"))
         combined["evidence"] = {"ml": ml_result, "virustotal": vt_result, "input_type": "URL"}
 
@@ -709,7 +699,7 @@ class ScanService:
             ai_enabled = False
             logger.warning("scan_total_deadline_settings")
         if not ai_enabled:
-            explanation = cls._local_explanation(combined["classification"], language)
+            explanation = cls._local_explanation(combined["classification"], language, target_url=target_url)
             explanation["provider"] = "LOCAL_FEATURE_DISABLED"
             explanation["provider_status"] = "DISABLED"
             explanation["fallback_reason"] = "AI_FEATURE_DISABLED"
@@ -728,14 +718,14 @@ class ScanService:
                 )
             except asyncio.TimeoutError:
                 log_event(logger, logging.WARNING, "scan_gemini_timeout", operation_id=operation_id, provider="GEMINI", error_code="GEMINI_TIMEOUT")
-                explanation = cls._local_explanation(combined["classification"], language)
+                explanation = cls._local_explanation(combined["classification"], language, target_url=target_url)
                 explanation["provider"] = "LOCAL_TIMEOUT_FALLBACK"
                 explanation["provider_status"] = "FALLBACK"
                 explanation["fallback_reason"] = "GEMINI_TIMEOUT"
                 explanation["input_truncated"] = len(target_url) > 300
             except Exception as error:
                 log_event(logger, logging.WARNING, "scan_gemini_failed", operation_id=operation_id, provider="GEMINI", error_type=safe_error(error), error_code="GEMINI_PROVIDER_ERROR")
-                explanation = cls._local_explanation(combined["classification"], language)
+                explanation = cls._local_explanation(combined["classification"], language, target_url=target_url)
                 explanation["provider"] = "LOCAL_ERROR_FALLBACK"
                 explanation["provider_status"] = "FALLBACK"
                 explanation["fallback_reason"] = "GEMINI_PROVIDER_ERROR"
